@@ -22,7 +22,7 @@ KUCOIN_BASE   = "https://api.kucoin.com/api/v1"
 CP_BASE       = "https://api.coinpaprika.com/v1"
 CG_BASE       = "https://api.coingecko.com/api/v3"
 
-MIN_VOL       = 5_000_000
+MIN_VOL       = 50_000     # filtro base — la UI permite subir desde aquí
 MAX_TOKENS    = 604
 API_DELAY     = 0.2
 STABLECOINS   = {"usdt","usdc","busd","dai","tusd","fdusd","usdd","usdp","frax",
@@ -506,7 +506,7 @@ def get_supply(cg_id):
                 "circ":fmt(circ),"ath":f"${ath:,.4f}" if ath else "N/A",
                 "ath_date":pdate(md.get("ath_date",{}).get("usd")),
                 "pct_ath":f"{pct}%" if pct is not None else "N/A",
-                "cats":"; ".join(d.get("categories",[])[:2]) or "N/A"}
+                "cats":", ".join(d.get("categories",[])[:2]) or "N/A"}
     except: return None
 
 @st.cache_data(ttl=1800)
@@ -563,7 +563,7 @@ def get_news(sym):
 def get_ai(sym,news):
     if not ANTHROPIC_KEY: return None
     txt="\n".join(f"- {n['title']}" for n in news)
-    prompt=(f"Token: {sym}\nTitulares: {txt}\nResponde en español:\n"
+    prompt=(f"Token: {sym}\nTitulares: {txt}\nResponde en espanol:\n"
             f"POSITIVO: punto1 | punto2\nNEGATIVO: riesgo1 | riesgo2\nEVENTO: evento clave")
     try:
         r=requests.post("https://api.anthropic.com/v1/messages",
@@ -656,7 +656,7 @@ def se_card_html(se,fases_total=4):
     sl_tp=""
     if n==fases_total and se.get("sl") and se.get("tp") and se.get("precio"):
         rr=round((se["tp"]-se["precio"])/max(se["precio"]-se["sl"],1e-9),1)
-        sl_tp=f'<div class="divider"></div><div style="display:flex;justify-content:space-around"><span class="t-red">SL {fmt_p(se["sl"])}</span><span class="t-green">TP {fmt_p(se["tp"])}</span></div><div style="text-align:center;margin-top:4px" class="t-sub">ATR={fmt_p(se.get("atr"))} · R/R=1:{rr}</div>'
+        sl_tp=f'<div class="divider"></div><div style="display:flex;justify-content:space-around"><span class="t-red">SL {fmt_p(se["sl"])}\</span><span class="t-green">TP {fmt_p(se["tp"])}\</span></div><div style="text-align:center;margin-top:4px" class="t-sub">ATR={fmt_p(se.get("atr"))} · R/R=1:{rr}</div>'
     return f'<div class="card" style="border-color:{bdr}"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">🚦 SMART ENTRY — {fases_total} FASES</div><div style="font-weight:700;font-size:14px;margin-bottom:8px">{cab}</div><div class="divider"></div>{filas}{sl_tp}</div>'
 
 # ══════════════════════════════════════════════════════════════════
@@ -671,6 +671,18 @@ tab1,tab2,tab3=st.tabs(["📡 Scanner","📊 Analisis","⚙️ Ajustes"])
 # ── TAB 1 SCANNER ───────────────────────────────────────────────
 with tab1:
     st.markdown("### Mejores tokens para Grid Bot")
+
+    # Filtro de volumen mínimo — seleccionable sin tocar código
+    VOL_OPCIONES = {
+        "50K  — todos los tokens": 50_000,
+        "250K — tokens activos":   250_000,
+        "500K — balance":          500_000,
+        "1M   — mayor liquidez":   1_000_000,
+        "5M   — solo grandes":     5_000_000,
+    }
+    vol_label = st.selectbox("💧 Volumen mínimo 24h", list(VOL_OPCIONES.keys()), index=2)
+    vol_min   = VOL_OPCIONES[vol_label]
+
     top_n = st.slider("Top resultados a mostrar", min_value=5, max_value=50, value=10, step=5)
 
     if "scan_results" not in st.session_state: st.session_state.scan_results=[]
@@ -684,18 +696,30 @@ with tab1:
             st.caption(f"✅ {st.session_state.scan_total} tokens")
 
     if st.session_state.scan_source:
-        st.markdown(f'<div class="info-box">Fuente: <strong>{st.session_state.scan_source}</strong> · vol ≥ ${MIN_VOL/1e6:.0f}M · PA · Smart Entry 4F</div>',unsafe_allow_html=True)
+        st.markdown(f'<div class="info-box">Fuente: <strong>{st.session_state.scan_source}</strong> · vol ≥ ${vol_min/1e3:.0f}K · PA · Smart Entry 4F</div>',unsafe_allow_html=True)
 
     if run_btn:
         with st.status("Escaneando mercado...", expanded=True) as status:
             st.write("📡 Conectando a KuCoin...")
-            pool, src = build_pool()
 
-            if not pool:
+            # Pasar vol_min al pool — override temporal del MIN_VOL global
+            pool_raw, src = kucoin_get_pool()
+            if not pool_raw:
+                pool_raw, src = coinpaprika_get_pool()
+            if not pool_raw:
                 st.error("❌ KuCoin y CoinPaprika fallaron. Revisa conexion.")
                 st.stop()
 
-            st.write(f"✅ {src} · {len(pool)} pares encontrados (vol ≥ ${MIN_VOL/1e6:.0f}M)")
+            # Filtrar con el vol_min elegido en UI
+            pool = [c for c in pool_raw if c["vol"] >= vol_min]
+            pool = pool[:MAX_TOKENS]
+
+            if not pool:
+                st.error(f"❌ Ningun token con vol ≥ ${vol_min/1e3:.0f}K. Baja el filtro.")
+                st.stop()
+
+            src_label = "🟢 KuCoin" if "kucoin" in src else "🔵 CoinPaprika"
+            st.write(f"✅ {src_label} · {len(pool)} pares (vol ≥ ${vol_min/1e3:.0f}K)")
             st.write("📊 Descargando velas 1h para cada token...")
 
             bar=st.progress(0); results=[]; errores=0

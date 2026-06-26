@@ -1,8 +1,8 @@
 """
-Quant Panel Web v2.1 — Streamlit Cloud
-Fuente de datos: CoinGecko (100% compatible con Streamlit Cloud)
+Quant Panel Web v3.0 — Streamlit Cloud
+Todo lo del V13: PA completo, Smart Entry 4F/3F, ML Lorentziana, LP/CP
+Fuente: CoinGecko (compatible con Streamlit Cloud)
 """
-
 import streamlit as st
 import time, math, re, xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -10,70 +10,55 @@ from datetime import datetime, timezone
 try:
     import requests
 except ImportError:
-    st.error("Falta instalar requests"); st.stop()
+    st.error("pip install requests"); st.stop()
 
-# ── Config ─────────────────────────────────────────────────────────
-st.set_page_config(page_title="Quant Panel", page_icon="⚡",
-                   layout="centered", initial_sidebar_state="collapsed")
+# ── Config ──────────────────────────────────────────────────────────
+st.set_page_config(page_title="Quant Panel",page_icon="⚡",
+                   layout="centered",initial_sidebar_state="collapsed")
 
-ANTHROPIC_KEY  = st.secrets.get("ANTHROPIC_KEY", "")
-CG_BASE        = "https://api.coingecko.com/api/v3"
-CG_DELAY       = 1.2    # segundos entre llamadas (rate limit gratuito)
-MIN_VOL        = 1_000_000
-MAX_TOKENS     = 20
-STABLECOINS    = {"usdt","usdc","busd","dai","tusd","fdusd","usdd","usdp","frax",
-                  "eur","gbp","try","brl","usde","pyusd","gusd","lusd","susd"}
+ANTHROPIC_KEY = st.secrets.get("ANTHROPIC_KEY","")
+CG_BASE       = "https://api.coingecko.com/api/v3"
+CG_DELAY      = 1.2
+MIN_VOL       = 1_000_000
+MAX_TOKENS    = 20
+STABLECOINS   = {"usdt","usdc","busd","dai","tusd","fdusd","usdd","usdp","frax",
+                 "eur","gbp","try","brl","usde","pyusd","gusd","lusd","susd"}
 
 EMA_LEN=50; RSI_LEN=10; RSI_OS=45; RSI_OB=65
 VOL_LEN=14; VOL_MULT=1.8; ATR_LEN=14; SL_M=3.0; TP_M=4.5
 
-# ── CSS ────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
+# ── CSS ─────────────────────────────────────────────────────────────
+st.markdown("""<style>
 .main .block-container{padding:1rem 1rem 2rem 1rem;max-width:480px}
 .stTabs [data-baseweb="tab-list"]{gap:2px}
 .stTabs [data-baseweb="tab"]{padding:8px 14px;font-size:13px}
-.card{background:#111827;border-radius:12px;padding:12px 14px;
-      margin-bottom:10px;border:1px solid #1e293b}
-.card-green{background:#052e16;border-radius:12px;padding:12px 14px;
-            margin-bottom:10px;border:1px solid #166534}
-.card-yellow{background:#1c1400;border-radius:12px;padding:12px 14px;
-             margin-bottom:10px;border:1px solid #854d0e}
-.card-red{background:#1a0a00;border-radius:12px;padding:12px 14px;
-          margin-bottom:10px;border:1px solid #7c2020}
-.tag-pump{background:#7c2020;color:#fff;border-radius:6px;
-          padding:2px 8px;font-size:11px;font-weight:700}
-.tag-bot{background:#4c1d95;color:#fff;border-radius:6px;
-         padding:2px 8px;font-size:11px;font-weight:600}
-.tag-score{background:#1c1917;color:#f59e0b;border-radius:6px;
-           padding:2px 8px;font-size:11px}
-.tag-green{background:#064e3b;color:#10b981;border-radius:6px;
-           padding:2px 8px;font-size:11px;font-weight:700}
-.tag-yellow{background:#422006;color:#f59e0b;border-radius:6px;
-            padding:2px 8px;font-size:11px;font-weight:700}
-.tag-red{background:#450a0a;color:#ef4444;border-radius:6px;
-         padding:2px 8px;font-size:11px;font-weight:700}
-.t-green{color:#10b981;font-weight:600}
-.t-red{color:#ef4444;font-weight:600}
-.t-yellow{color:#f59e0b;font-weight:600}
-.t-sub{color:#64748b;font-size:12px}
+.card{background:#111827;border-radius:12px;padding:12px 14px;margin-bottom:10px;border:1px solid #1e293b}
+.card-green{background:#052e16;border-radius:12px;padding:12px 14px;margin-bottom:10px;border:1px solid #166534}
+.card-yellow{background:#1c1400;border-radius:12px;padding:12px 14px;margin-bottom:10px;border:1px solid #854d0e}
+.card-red{background:#1a0a00;border-radius:12px;padding:12px 14px;margin-bottom:10px;border:1px solid #7c2020}
+.tag-pump{background:#7c2020;color:#fff;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:700}
+.tag-bot{background:#4c1d95;color:#fff;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600}
+.tag-score{background:#1c1917;color:#f59e0b;border-radius:6px;padding:2px 8px;font-size:11px}
+.tag-green{background:#064e3b;color:#10b981;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:700}
+.tag-yellow{background:#422006;color:#f59e0b;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:700}
+.tag-red{background:#450a0a;color:#ef4444;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:700}
+.t-green{color:#10b981;font-weight:600}.t-red{color:#ef4444;font-weight:600}
+.t-yellow{color:#f59e0b;font-weight:600}.t-sub{color:#64748b;font-size:12px}
 .divider{border-top:1px solid #1e293b;margin:8px 0}
-h1{font-size:1.5rem!important}
-h3{font-size:1rem!important;margin-bottom:4px!important}
-</style>
-""", unsafe_allow_html=True)
+h1{font-size:1.5rem!important}h3{font-size:1rem!important;margin-bottom:4px!important}
+</style>""",unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════
 # INDICADORES PURE PYTHON
 # ══════════════════════════════════════════════════════════════════
 
-def calc_ema(v, p):
+def calc_ema(v,p):
     if len(v)<p: return []
     k=2.0/(p+1); r=[sum(v[:p])/p]
     for x in v[p:]: r.append(x*k+r[-1]*(1-k))
     return r
 
-def calc_rsi(c, p):
+def calc_rsi(c,p):
     if len(c)<p+2: return []
     d=[c[i]-c[i-1] for i in range(1,len(c))]
     g=[max(x,0.) for x in d]; l=[abs(min(x,0.)) for x in d]
@@ -83,11 +68,11 @@ def calc_rsi(c, p):
         r.append(100. if al==0 else 100.-100./(1.+ag/al))
     return r
 
-def calc_sma(v, p):
+def calc_sma(v,p):
     if len(v)<p: return []
     return [sum(v[i-p:i])/p for i in range(p,len(v)+1)]
 
-def calc_atr(c, p):
+def calc_atr(c,p):
     d=[abs(c[i]-c[i-1]) for i in range(1,len(c))]
     if len(d)<p: return None
     a=sum(d[:p])/p
@@ -106,10 +91,10 @@ def chop_metrics(c):
             "net":round((c[-1]-c[0])/c[0]*100,2)}
 
 # ══════════════════════════════════════════════════════════════════
-# PRICE ACTION
+# PRICE ACTION COMPLETO (igual que V13)
 # ══════════════════════════════════════════════════════════════════
 
-def pa_estructura(closes, n=20):
+def pa_estructura(closes,n=20):
     if len(closes)<n: return "INDEFINIDA",0.0
     c=closes[-n:]
     highs=[c[i] for i in range(1,len(c)-1) if c[i]>c[i-1] and c[i]>c[i+1]]
@@ -124,7 +109,37 @@ def pa_estructura(closes, n=20):
         return "BAJISTA (LH/LL)",round(f,2)
     return "LATERAL",0.3
 
-def pa_calidad(closes, n=10):
+def pa_patron_velas(closes):
+    """Detecta patrones con solo closes (aproximación sin OHLC)."""
+    if len(closes)<3: return "Sin datos","⚪"
+    c=closes[-3:]; d=[c[i+1]-c[i] for i in range(2)]
+    def es_verde(i): return d[i]>0
+    def tamano(i):   return abs(d[i])
+    patrones=[]
+    # Doji: cambio mínimo
+    if tamano(2)<tamano(1)*0.1 and tamano(2)<tamano(0)*0.1:
+        patrones.append(("Doji (indecisión)","⚪"))
+    # 3 velas verdes consecutivas
+    if all(d[i]>0 for i in range(2)) and es_verde(2) and tamano(1)>0 and tamano(2)>0:
+        patrones.append(("3 velas verdes (impulso)","🟢"))
+    # 3 velas rojas consecutivas
+    if all(d[i]<0 for i in range(2)) and not es_verde(2):
+        patrones.append(("3 velas rojas (caída)","🔴"))
+    # Envolvente alcista: roja luego verde más grande
+    if d[1]<0 and d[2]>0 and tamano(2)>tamano(1)*1.2:
+        patrones.append(("Envolvente alcista 📈","🟢"))
+    # Envolvente bajista: verde luego roja más grande
+    if d[1]>0 and d[2]<0 and tamano(2)>tamano(1)*1.2:
+        patrones.append(("Envolvente bajista 📉","🔴"))
+    # Rebote fuerte: caída seguida de subida mayor
+    if d[1]<0 and d[2]>abs(d[1])*1.5:
+        patrones.append(("Rebote fuerte ↗️","🟢"))
+    # Rechazo bajista: subida seguida de caída mayor
+    if d[1]>0 and abs(d[2])>d[1]*1.5 and d[2]<0:
+        patrones.append(("Rechazo bajista ↘️","🔴"))
+    return patrones[0] if patrones else ("Sin patrón claro","⚪")
+
+def pa_calidad(closes,n=10):
     if len(closes)<n+3: return 0.5
     imp=closes[-n:]
     verdes=[imp[i+1]-imp[i] for i in range(len(imp)-1) if imp[i+1]>imp[i]]
@@ -137,7 +152,7 @@ def pa_calidad(closes, n=10):
     ef=net/max(path,1e-9)
     return round(min(rv*0.5+ef*0.5,1.0),2)
 
-def pa_sr(closes, n=40):
+def pa_sr(closes,n=40):
     if len(closes)<10: return [],[]
     cur=closes[-1]; niveles=[]
     for i in range(1,min(n,len(closes))-1):
@@ -155,10 +170,11 @@ def pa_sr(closes, n=40):
     res=sorted([p for t,p in agr if p>cur])[:2]
     return sop,res
 
-def analizar_pa(closes):
+def analizar_pa(closes,modo_rapido=False):
     est,fuerza=pa_estructura(closes)
     cal=pa_calidad(closes)
-    sop,res=pa_sr(closes)
+    patron,patron_emoji=("—","⚪") if modo_rapido else pa_patron_velas(closes)
+    sop,res=([],[]) if modo_rapido else pa_sr(closes)
     alcista="ALCISTA" in est; bajista="BAJISTA" in est
     if alcista and cal>=0.55:   v,c,col="✅ Impulso alcista de calidad","Alta","green"
     elif alcista:               v,c,col="⚠️ Alcista pero movimiento débil","Media","yellow"
@@ -166,37 +182,31 @@ def analizar_pa(closes):
     elif bajista:               v,c,col="⚠️ Bajista — rebote posible","Media","yellow"
     elif "LATERAL" in est:      v,c,col="↔️ Lateral — ideal para Grid","Media","yellow"
     else:                       v,c,col="⚪ Estructura indefinida","Baja","sub"
-    return {"veredicto":v,"confianza":c,"color":col,"estructura":est,
-            "fuerza":fuerza,"calidad":cal,"soportes":sop,"resistencias":res}
+    return {"veredicto":v,"confianza":c,"color":col,"estructura":est,"fuerza":fuerza,
+            "calidad":cal,"patron":patron,"patron_emoji":patron_emoji,"soportes":sop,"resistencias":res}
 
 # ══════════════════════════════════════════════════════════════════
-# SMART ENTRY — 4 FASES
+# SMART ENTRY 4 FASES — CORTO PLAZO
 # ══════════════════════════════════════════════════════════════════
 
-def smart_entry(closes, volumes, pa=None):
-    base={"fases":{1:False,2:False,3:False,4:False},
-          "vals":{},"fases_ok":0,"ok":False,
-          "sl":None,"tp":None,"atr":None,"precio":None}
+def smart_entry_cp(closes,volumes,pa=None):
+    base={"fases":{1:False,2:False,3:False,4:False},"vals":{},
+          "fases_ok":0,"ok":False,"sl":None,"tp":None,"atr":None,"precio":None}
     if not closes or len(closes)<EMA_LEN+RSI_LEN+5: return base
     cur=closes[-1]; base["precio"]=cur
-    # F1: EMA50
     e50s=calc_ema(closes,EMA_LEN); e50=e50s[-1] if e50s else None
     f1=bool(e50 and cur>e50)
     base["fases"][1]=f1; base["vals"][1]=f"Precio {fmt_p(cur)} | EMA50 {fmt_p(e50)}"
-    # F2: RSI
     r10s=calc_rsi(closes,RSI_LEN); r10=r10s[-1] if r10s else None
     f2=bool(r10 and RSI_OS<r10<RSI_OB)
-    base["fases"][2]=f2; base["vals"][2]=f"RSI(10) = {r10:.1f}" if r10 else "N/A"
-    # F3: Volumen
+    base["fases"][2]=f2; base["vals"][2]=f"RSI(10)={r10:.1f}" if r10 else "N/A"
     vsma=calc_sma(volumes,VOL_LEN); vm=vsma[-1] if vsma else None
     vr=round(volumes[-1]/vm,2) if vm and vm>0 else 0
     f3=vr>=VOL_MULT
-    base["fases"][3]=f3; base["vals"][3]=f"Vol ratio = {vr}× (mín {VOL_MULT}×)"
-    # F4: PA
-    pa_l=pa or analizar_pa(closes[-50:])
+    base["fases"][3]=f3; base["vals"][3]=f"Vol ratio={vr}× (mín {VOL_MULT}×)"
+    pa_l=pa or analizar_pa(closes[-50:],modo_rapido=True)
     f4=("ALCISTA" in pa_l["estructura"] and pa_l["calidad"]>=0.55)
-    base["fases"][4]=f4; base["vals"][4]=f"{pa_l['estructura']} | cal={pa_l['calidad']}"
-    # ATR
+    base["fases"][4]=f4; base["vals"][4]=f"{pa_l['estructura']} cal={pa_l['calidad']}"
     atr=calc_atr(closes,ATR_LEN)
     if atr:
         base["atr"]=round(atr,8); base["sl"]=round(cur-atr*SL_M,8); base["tp"]=round(cur+atr*TP_M,8)
@@ -205,43 +215,124 @@ def smart_entry(closes, volumes, pa=None):
     return base
 
 # ══════════════════════════════════════════════════════════════════
-# COINGECKO — FUENTE PRINCIPAL DE DATOS
+# SMART ENTRY 3 FASES — LARGO PLAZO
 # ══════════════════════════════════════════════════════════════════
 
+def smart_entry_lp(closes,pa=None):
+    """3 fases: SMA50>SMA200, RSI(14d) 40-70, Price Action alcista."""
+    base={"fases":{1:False,2:False,3:False},"vals":{},
+          "fases_ok":0,"ok":False,"sl":None,"tp":None,"atr":None,"precio":None}
+    if not closes or len(closes)<210: return base
+    cur=closes[-1]; base["precio"]=cur
+    sma50s=calc_sma(closes,50);   sma50=sma50s[-1]  if len(sma50s)>0  else None
+    sma200s=calc_sma(closes,200); sma200=sma200s[-1] if len(sma200s)>0 else None
+    f1=bool(sma50 and sma200 and sma50>sma200)
+    if sma50 and sma200:
+        dist=round((sma50-sma200)/sma200*100,2)
+        base["vals"][1]=f"SMA50={fmt_p(sma50)} SMA200={fmt_p(sma200)} dist={dist:+.2f}%"
+    else:
+        base["vals"][1]="Sin datos suficientes (necesita 200+ velas)"
+    base["fases"][1]=f1
+    rsi14s=calc_rsi(closes,14); r14=rsi14s[-1] if rsi14s else None
+    f2=bool(r14 and 40<r14<70)
+    base["fases"][2]=f2; base["vals"][2]=f"RSI(14d)={r14:.1f} (zona 40-70)" if r14 else "N/A"
+    pa_l=pa or analizar_pa(closes[-50:],modo_rapido=True)
+    f3=("ALCISTA" in pa_l["estructura"] and pa_l["calidad"]>=0.50)
+    base["fases"][3]=f3; base["vals"][3]=f"{pa_l['estructura']} cal={pa_l['calidad']}"
+    atr=calc_atr(closes,14)
+    if atr:
+        base["atr"]=round(atr,4); base["sl"]=round(cur-atr*2.0,4); base["tp"]=round(cur+atr*3.0,4)
+    n=sum(1 for v in base["fases"].values() if v)
+    base["fases_ok"]=n; base["ok"]=(n==3)
+    return base
+
+# ══════════════════════════════════════════════════════════════════
+# SEÑAL ML — LORENTZIANA SIMPLIFICADA (como V13)
+# ══════════════════════════════════════════════════════════════════
+
+def senal_lorentziana(closes,lookahead=4,k=8):
+    """Clasificador k-NN con distancia Lorentziana sobre RSI y EMA."""
+    if len(closes)<60: return None
+    rsi14=calc_rsi(closes,14)
+    ema20=calc_ema(closes,20)
+    n_rsi=len(rsi14); n_ema=len(ema20)
+    n=min(n_rsi,n_ema,len(closes))
+    if n<lookahead+k+5: return None
+    # Normalizar features
+    def norm(lst):
+        mn,mx=min(lst),max(lst); r=mx-mn
+        return [0.5 if r==0 else (x-mn)/r for x in lst]
+    # Alinear desde el final
+    c_al  =closes[-n:]
+    rsi_al=norm(rsi14[-n:])
+    ema_al=norm(ema20[-n:])
+    muestras=n-lookahead
+    etiquetas=[1 if c_al[i+lookahead]>c_al[i] else -1 for i in range(muestras)]
+    actual=[rsi_al[-1],ema_al[-1]]
+    distancias=[]
+    for i in range(muestras):
+        v=[rsi_al[i],ema_al[i]]
+        d=sum(math.log(1+abs(a-b)) for a,b in zip(actual,v))
+        distancias.append((d,etiquetas[i]))
+    distancias.sort(key=lambda x:x[0])
+    pred=sum(lbl for _,lbl in distancias[:k])
+    if pred>=k*0.5:   señal="🟢 COMPRA (ML)"
+    elif pred<=-k*0.5: señal="🔴 VENTA (ML)"
+    else:              señal="⚪ NEUTRAL (ML)"
+    return {"señal":señal,"pred":pred,"k":k}
+
+# ══════════════════════════════════════════════════════════════════
+# COINGECKO — FUENTE DE DATOS
+# ══════════════════════════════════════════════════════════════════
+
+CG_MAP={
+    "AAVE":"aave","UNI":"uniswap","LINK":"chainlink","MKR":"maker",
+    "COMP":"compound-governance-token","SNX":"havven","CRV":"curve-dao-token",
+    "BAL":"balancer","SUSHI":"sushi","YFI":"yearn-finance","1INCH":"1inch",
+    "LDO":"lido-dao","RPL":"rocket-pool","PENDLE":"pendle",
+    "BTC":"bitcoin","ETH":"ethereum","BNB":"binancecoin","SOL":"solana",
+    "ADA":"cardano","DOT":"polkadot","AVAX":"avalanche-2","MATIC":"matic-network",
+    "ATOM":"cosmos","NEAR":"near","FTM":"fantom","ALGO":"algorand",
+    "XLM":"stellar","XRP":"ripple","TRX":"tron","ARB":"arbitrum",
+    "OP":"optimism","APT":"aptos","SUI":"sui","SEI":"sei-network",
+    "INJ":"injective-protocol","TIA":"celestia","AXS":"axie-infinity",
+    "MANA":"decentraland","SAND":"the-sandbox","IMX":"immutable-x",
+    "GALA":"gala","ENJ":"enjincoin","FET":"fetch-ai","AGIX":"singularitynet",
+    "OCEAN":"ocean-protocol","RENDER":"render-token","TAO":"bittensor",
+    "WLD":"worldcoin-wld","SYN":"synapse-2","RUNE":"thorchain",
+    "CFX":"conflux-token","GMT":"stepn","PEOPLE":"constitutiondao",
+    "ID":"space-id","DOGE":"dogecoin","SHIB":"shiba-inu","PEPE":"pepe",
+    "FLOKI":"floki","LTC":"litecoin","BCH":"bitcoin-cash","ETC":"ethereum-classic",
+    "XMR":"monero","ZEC":"zcash","VET":"vechain","HBAR":"hedera-hashgraph",
+    "ICP":"internet-computer","FLOW":"flow","THETA":"theta-token",
+    "EGLD":"elrond-erd-2","KAVA":"kava","STX":"blockstack","ROSE":"oasis-network",
+    "DYDX":"dydx","GMX":"gmx","JTO":"jito-governance-token",
+    "PYTH":"pyth-network","JUP":"jupiter-exchange-solana","BONK":"bonk",
+    "WIF":"dogwifcoin","HYPE":"hyperliquid","KAITO":"kaito",
+    "ALLO":"allo-protocol","OKB":"okb","CRO":"crypto-com-chain",
+    "ZEN":"zencash","GTC":"gitcoin","HIGH":"highstreet",
+}
+
 @st.cache_data(ttl=300)
-def cg_fetch_pool():
-    """Top monedas por volumen desde CoinGecko markets."""
+def cg_pool():
     coins=[]
     for page in range(1,3):
         try:
             r=requests.get(f"{CG_BASE}/coins/markets",
-                params={"vs_currency":"usd","order":"volume_desc",
-                        "per_page":100,"page":page,
-                        "price_change_percentage":"24h","sparkline":"false"},
+                params={"vs_currency":"usd","order":"volume_desc","per_page":100,
+                        "page":page,"price_change_percentage":"24h","sparkline":"false"},
                 timeout=15)
-            r.raise_for_status()
-            coins.extend(r.json())
-            time.sleep(CG_DELAY)
+            r.raise_for_status(); coins.extend(r.json()); time.sleep(CG_DELAY)
         except: break
     return coins
 
-def cg_fetch_ohlcv(coin_id, days=7):
-    """Velas horarias desde CoinGecko market_chart."""
+def cg_ohlcv(coin_id,days=7):
     try:
         r=requests.get(f"{CG_BASE}/coins/{coin_id}/market_chart",
             params={"vs_currency":"usd","days":days},timeout=15)
-        r.raise_for_status()
-        d=r.json()
-        closes =[p[1] for p in d.get("prices",[])]
-        volumes=[v[1] for v in d.get("total_volumes",[])]
-        return closes,volumes
+        r.raise_for_status(); d=r.json()
+        return [p[1] for p in d.get("prices",[])],[v[1] for v in d.get("total_volumes",[])]
     except: return None,None
-
-CG_MAP={"SYN":"synapse-2","FET":"fetch-ai","AGIX":"singularitynet",
-        "RUNE":"thorchain","CFX":"conflux-token","GMT":"stepn",
-        "PEOPLE":"constitutiondao","ID":"space-id","MANA":"decentraland",
-        "SAND":"the-sandbox","AXS":"axie-infinity","GTC":"gitcoin",
-        "HIGH":"highstreet","ACH":"alchemy-pay","FOR":"the-force-protocol"}
 
 @st.cache_data(ttl=3600)
 def get_cg_id(sym):
@@ -273,7 +364,7 @@ def get_supply(cg_id):
             if v>=1e9:  return f"{v/1e9:.2f}B"
             if v>=1e6:  return f"{v/1e6:.2f}M"
             return f"{v:,.0f}"
-        def pd2(s):
+        def pdate(s):
             if not s: return "N/A"
             try: return datetime.fromisoformat(s.replace("Z","+00:00")).strftime("%d/%m/%Y")
             except: return "N/A"
@@ -283,7 +374,7 @@ def get_supply(cg_id):
         pct=round((cur-ath)/ath*100,1) if ath and cur else None
         return {"max":fmt(maxi) if maxi else("∞" if not total else fmt(total)),
                 "circ":fmt(circ),"ath":f"${ath:,.4f}" if ath else "N/A",
-                "ath_date":pd2(md.get("ath_date",{}).get("usd")),
+                "ath_date":pdate(md.get("ath_date",{}).get("usd")),
                 "pct_ath":f"{pct}%" if pct is not None else "N/A",
                 "cats":", ".join(d.get("categories",[])[:2]) or "N/A"}
     except: return None
@@ -295,8 +386,7 @@ def get_unlocks(sym):
             timeout=10,headers={"User-Agent":"Mozilla/5.0"})
         if r.status_code!=200: return []
         evs=r.json().get("unlockEvents") or r.json().get("events") or []
-        now=datetime.now(timezone.utc).timestamp()
-        result=[]
+        now=datetime.now(timezone.utc).timestamp(); result=[]
         for ev in evs:
             ts=ev.get("timestamp") or ev.get("date")
             if ts is None: continue
@@ -341,11 +431,10 @@ def get_news(sym):
         if k not in seen: seen.add(k); uniq.append(n)
     return uniq[:5]
 
-def get_ai(sym, news):
+def get_ai(sym,news):
     if not ANTHROPIC_KEY: return None
     txt="\n".join(f"- {n['title']}" for n in news)
-    prompt=(f"Token: {sym}\nTitulares: {txt}\n"
-            f"Responde en español, formato exacto:\n"
+    prompt=(f"Token: {sym}\nTitulares: {txt}\nResponde en español:\n"
             f"POSITIVO: punto1 | punto2\nNEGATIVO: riesgo1 | riesgo2\nEVENTO: evento clave")
     try:
         r=requests.post("https://api.anthropic.com/v1/messages",
@@ -362,26 +451,21 @@ def get_ai(sym, news):
 # SCANNER
 # ══════════════════════════════════════════════════════════════════
 
-def build_pool_from_cg():
-    raw=cg_fetch_pool()
-    pool=[]
+def build_pool():
+    raw=cg_pool(); pool=[]
     for coin in raw:
         sym=(coin.get("symbol") or "").lower()
         if sym in STABLECOINS: continue
         vol=coin.get("total_volume") or 0
         if vol<MIN_VOL: continue
-        pool.append({
-            "symbol": coin["symbol"].upper(),
-            "cg_id":  coin["id"],
-            "price":  coin.get("current_price") or 0,
-            "vol":    vol,
-            "change_24h": coin.get("price_change_percentage_24h_in_currency") or
-                          coin.get("price_change_percentage_24h") or 0,
-        })
+        pool.append({"symbol":coin["symbol"].upper(),"cg_id":coin["id"],
+                     "price":coin.get("current_price") or 0,"vol":vol,
+                     "change_24h":coin.get("price_change_percentage_24h_in_currency") or
+                                  coin.get("price_change_percentage_24h") or 0})
     pool.sort(key=lambda x:x["vol"],reverse=True)
     return pool[:MAX_TOKENS]
 
-def score_token(coin, closes, volumes):
+def score_token(coin,closes,volumes):
     m=chop_metrics(closes[-100:] if len(closes)>100 else closes)
     if not m: return None
     liq=math.log10(max(coin["vol"],1)); chop=m["chop"]
@@ -404,13 +488,12 @@ def score_token(coin, closes, volumes):
             "INF LONG":round(il,1),"INF SHORT":round(is_,1),
             "DCA LONG":round(dl,1),"DCA SHORT":round(ds,1)}
     best=max(scores,key=scores.get)
-    pa=analizar_pa(closes[-50:])
-    se=smart_entry(closes,volumes,pa=pa)
+    pa=analizar_pa(closes[-50:],modo_rapido=True)
+    se=smart_entry_cp(closes,volumes,pa=pa)
     return {"token":coin["symbol"],"price":coin["price"],"change_24h":c24,
             "chop":chop,"vol_h":vol,"range":m["range"],
             "liq_m":round(coin["vol"]/1e6,1),"trend_ok":trend_ok,
-            "pa":pa,"se":se,"best":best,
-            "best_score":round(scores[best],1),"scores":scores}
+            "pa":pa,"se":se,"best":best,"best_score":round(scores[best],1)}
 
 # ══════════════════════════════════════════════════════════════════
 # HELPERS UI
@@ -427,75 +510,70 @@ def pa_card_html(pa):
     col=col_map.get(pa["color"],"#64748b")
     sop=" | ".join(fmt_p(s) for s in pa["soportes"]) if pa["soportes"] else "N/A"
     res=" | ".join(fmt_p(r) for r in pa["resistencias"]) if pa["resistencias"] else "N/A"
+    patron_html=""
+    if pa.get("patron") and pa["patron"] not in ("—","Sin datos"):
+        patron_html=f'<div style="margin-top:4px;font-size:12px">{pa["patron_emoji"]} {pa["patron"]}</div>'
     return f"""<div class="card">
     <div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">📐 PRICE ACTION</div>
     <div style="color:{col};font-size:13px;font-weight:600;margin-bottom:6px">{pa['veredicto']}</div>
-    <div style="display:flex;gap:12px;flex-wrap:wrap" class="t-sub">
-        <span>Estructura: {pa['estructura']}</span>
-        <span>Calidad: {pa['calidad']}</span>
-        <span>Confianza: {pa['confianza']}</span>
+    <div style="display:flex;gap:10px;flex-wrap:wrap" class="t-sub">
+        <span>Est: {pa['estructura']}</span><span>Cal: {pa['calidad']}</span><span>Conf: {pa['confianza']}</span>
     </div>
+    {patron_html}
     <div class="divider"></div>
     <div style="font-size:12px"><span class="t-green">Sop: {sop}</span></div>
     <div style="font-size:12px"><span class="t-red">Res: {res}</span></div>
     </div>"""
 
-def se_card_html(se):
+def se_card_html(se,fases_total=4):
     n=se["fases_ok"]
-    if n==4:   cab,bdr="🟢 ENTRADA VÁLIDA — 4/4 fases","#166534"
-    elif n==3: cab,bdr="🟡 CASI LISTO — 3/4 fases","#854d0e"
-    elif n==2: cab,bdr="🟠 ESPERAR — 2/4 fases","#7c2020"
-    else:      cab,bdr="🔴 NO ENTRAR","#7c2020"
-    nombres={1:"Tendencia > EMA50",2:"Momentum RSI 45–65",
-             3:"Volumen spike ×1.8",4:"Price Action alcista"}
+    if n==fases_total:   cab,bdr=f"🟢 ENTRADA VÁLIDA — {n}/{fases_total}","#166534"
+    elif n==fases_total-1: cab,bdr=f"🟡 CASI LISTO — {n}/{fases_total}","#854d0e"
+    else:                  cab,bdr=f"🔴 ESPERAR — {n}/{fases_total}","#7c2020"
+    nombres_cp={1:"Tendencia > EMA50",2:"Momentum RSI 45–65",3:"Volumen ×1.8",4:"Price Action"}
+    nombres_lp={1:"SMA50 > SMA200",2:"RSI(14d) 40–70",3:"Price Action alcista"}
+    nombres=nombres_lp if fases_total==3 else nombres_cp
     filas=""
-    for num in range(1,5):
+    for num in range(1,fases_total+1):
         ok=se["fases"][num]; ic="✅" if ok else "❌"
         col="#10b981" if ok else "#ef4444"
-        filas+=f'<div style="margin-bottom:4px"><span style="color:{col}">{ic} F{num}: {nombres[num]}</span><br><span class="t-sub" style="padding-left:16px">{se["vals"].get(num,"")}</span></div>'
+        filas+=f'<div style="margin-bottom:4px"><span style="color:{col}">{ic} F{num}: {nombres.get(num,"")}</span><br><span class="t-sub" style="padding-left:16px">{se["vals"].get(num,"")}</span></div>'
     sl_tp=""
-    if n==4:
-        if se["sl"] and se["tp"] and se["precio"]:
-            rr=round((se["tp"]-se["precio"])/max(se["precio"]-se["sl"],1e-9),1)
-            sl_tp=f'<div class="divider"></div><div style="display:flex;justify-content:space-around"><span class="t-red">SL {fmt_p(se["sl"])}</span><span class="t-green">TP {fmt_p(se["tp"])}</span></div><div style="text-align:center;margin-top:4px" class="t-sub">R/R = 1:{rr}</div>'
-    return f'<div class="card" style="border-color:{bdr}"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">🚦 SMART ENTRY — SEMÁFORO</div><div style="font-weight:700;font-size:14px;margin-bottom:8px">{cab}</div><div class="divider"></div>{filas}{sl_tp}</div>'
+    if n==fases_total and se.get("sl") and se.get("tp") and se.get("precio"):
+        rr=round((se["tp"]-se["precio"])/max(se["precio"]-se["sl"],1e-9),1)
+        sl_tp=f'<div class="divider"></div><div style="display:flex;justify-content:space-around"><span class="t-red">SL {fmt_p(se["sl"])}</span><span class="t-green">TP {fmt_p(se["tp"])}</span></div><div style="text-align:center;margin-top:4px" class="t-sub">ATR={fmt_p(se.get("atr"))} · R/R=1:{rr}</div>'
+    return f'<div class="card" style="border-color:{bdr}"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">🚦 SMART ENTRY — {fases_total} FASES</div><div style="font-weight:700;font-size:14px;margin-bottom:8px">{cab}</div><div class="divider"></div>{filas}{sl_tp}</div>'
 
 # ══════════════════════════════════════════════════════════════════
-# UI
+# UI PRINCIPAL
 # ══════════════════════════════════════════════════════════════════
 
 st.markdown("# ⚡ Quant Panel")
-st.markdown('<p class="t-sub">Screener de Grid Bots · Pionex · v2.1</p>', unsafe_allow_html=True)
+st.markdown('<p class="t-sub">Screener · Pionex · v3.0 — todo el V13</p>',unsafe_allow_html=True)
 
 tab1,tab2,tab3=st.tabs(["📡 Scanner","📊 Análisis","⚙️ Ajustes"])
 
-# ── TAB 1: SCANNER ─────────────────────────────────────────────────
+# ── TAB 1 SCANNER ───────────────────────────────────────────────
 with tab1:
     st.markdown("### Mejores tokens para Grid Bot")
-    st.caption("CoinGecko · Price Action · Smart Entry 4 fases")
-
-    if "scan_results" not in st.session_state:
-        st.session_state.scan_results=[]
-
-    col1,col2=st.columns([2,1])
-    with col1:
-        run_btn=st.button("🔍 Escanear ahora",use_container_width=True,type="primary")
-    with col2:
-        if st.session_state.scan_results:
-            st.caption(f"✅ {len(st.session_state.scan_results)} tokens")
+    st.caption("CoinGecko · PA · Smart Entry 4 fases")
+    if "scan_results" not in st.session_state: st.session_state.scan_results=[]
+    c1,c2=st.columns([2,1])
+    with c1: run_btn=st.button("🔍 Escanear ahora",use_container_width=True,type="primary")
+    with c2:
+        if st.session_state.scan_results: st.caption(f"✅ {len(st.session_state.scan_results)} tokens")
 
     if run_btn:
         with st.status("Escaneando mercado...",expanded=True) as status:
             st.write("Obteniendo top tokens de CoinGecko...")
-            pool=build_pool_from_cg()
+            pool=build_pool()
             if not pool: st.error("No se pudo conectar a CoinGecko"); st.stop()
             bar=st.progress(0); results=[]
             for i,coin in enumerate(pool):
                 st.write(f"Analizando {coin['symbol']} ({i+1}/{len(pool)})...")
                 bar.progress((i+1)/len(pool))
-                closes,volumes=cg_fetch_ohlcv(coin["cg_id"],days=7)
-                if closes is None or len(closes)<20:
-                    time.sleep(CG_DELAY); continue
+                closes,volumes=cg_ohlcv(coin["cg_id"],days=7)
+                if closes is None or len(closes)<20: time.sleep(CG_DELAY); continue
                 r=score_token(coin,closes,volumes)
                 if r: results.append(r)
                 time.sleep(CG_DELAY)
@@ -504,86 +582,92 @@ with tab1:
             status.update(label=f"✅ Top {len(results[:10])} tokens",state="complete")
 
     for r in st.session_state.scan_results:
-        pa=r["pa"]; se=r["se"]
-        pdet=se["ok"]; c24=r["change_24h"]
-        change_class="t-green" if c24>=0 else "t-red"
-        pump_tag='<span class="tag-pump">🔥 PUMP</span>' if pdet else ""
+        pa=r["pa"]; se=r["se"]; pdet=se["ok"]; c24=r["change_24h"]
+        cc="t-green" if c24>=0 else "t-red"
+        pt='<span class="tag-pump">🔥 PUMP</span>' if pdet else ""
         n=se["fases_ok"]
-        se_html=f'<span class="tag-green">🟢×{n} ENTRADA</span>' if n==4 else \
-                f'<span class="tag-yellow">🟡{n}/4</span>' if n==3 else \
-                f'<span class="tag-red">🔴{n}/4</span>'
-        pa_col={"green":"#10b981","red":"#ef4444","yellow":"#f59e0b"}.get(pa["color"],"#64748b")
-        sl_tp=""
-        if pdet:
-            sl_tp=f'<div class="divider"></div><div style="display:flex;justify-content:space-around"><span class="t-red">SL {fmt_p(se.get("sl"))}</span><span class="t-green">TP {fmt_p(se.get("tp"))}</span></div>'
-        st.markdown(f"""
-        <div class="{'card-green' if pdet else 'card'}">
+        se_h=f'<span class="tag-green">🟢×{n}</span>' if n==4 else f'<span class="tag-yellow">🟡{n}/4</span>' if n==3 else f'<span class="tag-red">🔴{n}/4</span>'
+        pac={"green":"#10b981","red":"#ef4444","yellow":"#f59e0b"}.get(pa["color"],"#64748b")
+        slt=""
+        if pdet: slt=f'<div class="divider"></div><div style="display:flex;justify-content:space-around"><span class="t-red">SL {fmt_p(se.get("sl"))}</span><span class="t-green">TP {fmt_p(se.get("tp"))}</span></div>'
+        st.markdown(f"""<div class="{'card-green' if pdet else 'card'}">
             <div style="display:flex;justify-content:space-between;align-items:center">
                 <span style="font-size:17px;font-weight:700;color:#f1f5f9">{r['token']}</span>
-                <span style="display:flex;gap:6px;align-items:center">
-                    <span class="{change_class}">{c24:+.1f}%</span>{pump_tag}
-                </span>
+                <span style="display:flex;gap:6px;align-items:center"><span class="{cc}">{c24:+.1f}%</span>{pt}</span>
             </div>
             <div style="color:#f59e0b;font-size:15px;margin:2px 0">{fmt_p(r['price'])}</div>
             <div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0">
-                <span class="tag-bot">{r['best']}</span>
-                <span class="tag-score">Score {r['best_score']}</span>
-                {se_html}
+                <span class="tag-bot">{r['best']}</span><span class="tag-score">Score {r['best_score']}</span>{se_h}
             </div>
-            <div style="color:{pa_col};font-size:12px">{pa['veredicto']}</div>
+            <div style="color:{pac};font-size:12px">{pa['veredicto']}</div>
             <div class="t-sub">Chop {r['chop']} · Vol {r['vol_h']:.1f}% · {r['liq_m']}M$</div>
-            {sl_tp}
-        </div>""", unsafe_allow_html=True)
+            {slt}</div>""", unsafe_allow_html=True)
 
-# ── TAB 2: ANÁLISIS ─────────────────────────────────────────────────
+# ── TAB 2 ANÁLISIS ───────────────────────────────────────────────
 with tab2:
     st.markdown("### Análisis Individual")
-    st.caption("Price Action · Smart Entry · Supply · Unlocks · Noticias · IA")
+    modo=st.radio("Modo",["⚡ Corto Plazo (1H · días)","📅 Largo Plazo (1D · semanas/meses)"],
+                  horizontal=True,label_visibility="collapsed")
+    es_lp="Largo" in modo
 
-    col1,col2=st.columns([3,1])
-    with col1:
-        sym_input=st.text_input("Ticker",placeholder="BTC, SOL, SYN...",
+    c1,c2=st.columns([3,1])
+    with c1:
+        sym_input=st.text_input("Ticker",placeholder="BTC, SOL, AAVE...",
                                 label_visibility="collapsed").upper().strip()
-    with col2:
+    with c2:
         do_analyze=st.button("Analizar",type="primary",use_container_width=True)
 
     if do_analyze and sym_input:
-        with st.status(f"Analizando {sym_input}...",expanded=True) as status:
-            st.write("Buscando coin ID en CoinGecko...")
+        with st.status(f"Analizando {sym_input} ({'LP' if es_lp else 'CP'})...",expanded=True) as status:
+            st.write("Buscando en CoinGecko...")
             cg_id_val=get_cg_id(sym_input)
-            if not cg_id_val:
-                st.error(f"No se encontró {sym_input} en CoinGecko"); st.stop()
-            st.write("Descargando velas horarias (7 días)...")
-            c,v=cg_fetch_ohlcv(cg_id_val,days=7)
-            if c is None or len(c)<20:
-                st.error(f"Sin datos de velas para {sym_input}"); st.stop()
-            st.write("Price Action..."); pa=analizar_pa(c[-50:])
-            st.write("Smart Entry..."); se=smart_entry(c,v,pa=pa)
+            if not cg_id_val: st.error(f"No se encontró {sym_input}"); st.stop()
+            if es_lp:
+                st.write("Descargando velas diarias (200 días)...")
+                c,v=cg_ohlcv(cg_id_val,days=200)
+            else:
+                st.write("Descargando velas horarias (7 días)...")
+                c,v=cg_ohlcv(cg_id_val,days=7)
+            if c is None or len(c)<20: st.error("Sin datos de velas"); st.stop()
+            st.write("Price Action...")
+            pa=analizar_pa(c[-50:],modo_rapido=False)
+            if es_lp:
+                st.write("Smart Entry largo plazo (3 fases)...")
+                se=smart_entry_lp(c,pa=pa)
+            else:
+                st.write("Smart Entry corto plazo (4 fases)...")
+                se=smart_entry_cp(c,v,pa=pa)
+            st.write("Señal ML Lorentziana...")
+            ml=senal_lorentziana(c)
             st.write("Supply y ATH..."); supply=get_supply(cg_id_val)
             st.write("Token unlocks..."); unlocks=get_unlocks(sym_input)
             st.write("Noticias RSS..."); news=get_news(sym_input)
             ai_text=None
-            if ANTHROPIC_KEY:
-                st.write("Resumen IA..."); ai_text=get_ai(sym_input,news)
+            if ANTHROPIC_KEY: st.write("Resumen IA..."); ai_text=get_ai(sym_input,news)
             status.update(label=f"✅ {sym_input} analizado",state="complete")
 
         # Precio
-        st.markdown(f'<div class="card"><div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:22px;font-weight:700;color:#f1f5f9">{sym_input}</span><span class="t-yellow" style="font-size:20px">{fmt_p(c[-1])}</span></div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="card"><div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:22px;font-weight:700;color:#f1f5f9">{sym_input}</span><span class="t-yellow" style="font-size:20px">{fmt_p(c[-1])}</span></div><div class="t-sub">{"📅 Largo Plazo · velas 1D" if es_lp else "⚡ Corto Plazo · velas 1H"}</div></div>',unsafe_allow_html=True)
         # PA
-        st.markdown(pa_card_html(pa), unsafe_allow_html=True)
+        st.markdown(pa_card_html(pa),unsafe_allow_html=True)
         # SE
-        st.markdown(se_card_html(se), unsafe_allow_html=True)
+        fases_total=3 if es_lp else 4
+        st.markdown(se_card_html(se,fases_total=fases_total),unsafe_allow_html=True)
+        # ML
+        if ml:
+            ml_col="#10b981" if "COMPRA" in ml["señal"] else("#ef4444" if "VENTA" in ml["señal"] else "#64748b")
+            st.markdown(f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:6px">🤖 SEÑAL ML LORENTZIANA</div><div style="color:{ml_col};font-size:14px;font-weight:600">{ml["señal"]}</div><div class="t-sub">Predicción: {ml["pred"]} sobre {ml["k"]} vecinos</div><div class="t-sub">⚠️ Aproximación simplificada — no es señal definitiva</div></div>',unsafe_allow_html=True)
         # Supply
         if supply:
-            st.markdown(f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">💎 SUPPLY &amp; ATH</div><div style="display:flex;justify-content:space-around;text-align:center;margin-bottom:8px"><div><div class="t-sub">Supply Máx</div><div style="color:#f1f5f9">{supply["max"]}</div></div><div><div class="t-sub">Circulante</div><div style="color:#f1f5f9">{supply["circ"]}</div></div></div><div style="display:flex;justify-content:space-around;text-align:center"><div><div class="t-sub">ATH</div><div class="t-red">{supply["ath"]}</div><div class="t-sub">{supply["ath_date"]}</div></div><div><div class="t-sub">vs ATH</div><div style="color:#f1f5f9;font-size:15px">{supply["pct_ath"]}</div></div></div><div class="divider"></div><div class="t-sub">{supply["cats"]}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">💎 SUPPLY &amp; ATH</div><div style="display:flex;justify-content:space-around;text-align:center;margin-bottom:8px"><div><div class="t-sub">Supply Máx</div><div style="color:#f1f5f9">{supply["max"]}</div></div><div><div class="t-sub">Circulante</div><div style="color:#f1f5f9">{supply["circ"]}</div></div></div><div style="display:flex;justify-content:space-around;text-align:center"><div><div class="t-sub">ATH</div><div class="t-red">{supply["ath"]}</div><div class="t-sub">{supply["ath_date"]}</div></div><div><div class="t-sub">vs ATH</div><div style="color:#f1f5f9;font-size:15px">{supply["pct_ath"]}</div></div></div><div class="divider"></div><div class="t-sub">{supply["cats"]}</div></div>',unsafe_allow_html=True)
         # Unlocks
         if unlocks:
             rows="".join(f'<div style="color:{"#ef4444" if u["urgent"] else "#f1f5f9"};font-size:12px;margin-bottom:4px">{"⚠️" if u["urgent"] else "📅"} {u["date"]} ({u["days"]}d) {u["cat"]}</div>' for u in unlocks)
-            st.markdown(f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">🔓 TOKEN UNLOCKS (90d)</div>{rows}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">🔓 TOKEN UNLOCKS (90d)</div>{rows}</div>',unsafe_allow_html=True)
         # Noticias
         if news:
             rows="".join(f'<div style="font-size:12px;color:#f1f5f9;margin-bottom:5px">{n["sent"]} <span class="t-sub">[{n["src"]}]</span> {n["title"]}</div>' for n in news)
-            st.markdown(f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">📰 NOTICIAS</div>{rows}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">📰 NOTICIAS</div>{rows}</div>',unsafe_allow_html=True)
         # IA
         if ai_text:
             rows=""
@@ -591,23 +675,24 @@ with tab2:
                 if not line.strip(): continue
                 col="#10b981" if "POSITIVO" in line else("#ef4444" if "NEGATIVO" in line else "#f59e0b")
                 rows+=f'<div style="color:{col};font-size:12px;margin-bottom:5px">{line}</div>'
-            st.markdown(f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">🤖 ANÁLISIS IA</div>{rows}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">🤖 ANÁLISIS IA</div>{rows}</div>',unsafe_allow_html=True)
         elif not ANTHROPIC_KEY:
             st.info("💡 Agrega ANTHROPIC_KEY en Streamlit Secrets para activar el análisis IA.")
     elif do_analyze:
         st.warning("Ingresa un ticker primero.")
 
-# ── TAB 3: AJUSTES ─────────────────────────────────────────────────
+# ── TAB 3 AJUSTES ───────────────────────────────────────────────
 with tab3:
     st.markdown("### Ajustes")
-    st.markdown("**API Key de Anthropic** *(opcional)*")
     st.code('# Streamlit Cloud → Settings → Secrets:\nANTHROPIC_KEY = "sk-ant-..."')
     st.info("La key se configura en el dashboard de Streamlit Cloud.")
     st.divider()
-    st.markdown("""**Fuentes de datos v2.1**
-- 🦎 **CoinGecko** — precios, velas, supply, ATH/ATL *(sin restricciones en la nube)*
-- 🔓 **token.unlocks.app** — calendario de vesting
-- 📰 **RSS** — CoinDesk · CoinTelegraph · Decrypt · TheBlock
-- 🤖 **Claude API** — resumen IA *(requiere key)*
+    st.markdown("""**Quant Panel v3.0 — igual que V13 PC**
+- 📐 Price Action completo (estructura, patrones de velas, S/R)
+- 🚦 Smart Entry 4 fases (Corto Plazo: EMA+RSI+Vol+PA)
+- 📅 Smart Entry 3 fases (Largo Plazo: SMA50/200+RSI+PA)
+- 🤖 Señal ML Lorentziana simplificada
+- 💎 Supply · ATH/ATL · Token Unlocks
+- 📰 Noticias RSS · Análisis IA
     """)
     st.caption("⚠️ Información de mercado. No es recomendación de inversión.")

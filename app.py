@@ -115,26 +115,29 @@ def pa_estructura(closes,n=20):
     return "LATERAL",0.3
 
 def pa_patron_velas(closes):
-    if len(closes)<3: return "Sin datos","⚪"
-    c=closes[-3:]; d=[c[i+1]-c[i] for i in range(2)]
-    def es_verde(i): return d[i]>0
-    def tamano(i):   return abs(d[i])
-    patrones=[]
-    if tamano(2)<tamano(1)*0.1 and tamano(2)<tamano(0)*0.1:
-        patrones.append(("Doji (indecision)","⚪"))
-    if all(d[i]>0 for i in range(2)) and es_verde(2) and tamano(1)>0 and tamano(2)>0:
-        patrones.append(("3 velas verdes (impulso)","🟢"))
-    if all(d[i]<0 for i in range(2)) and not es_verde(2):
-        patrones.append(("3 velas rojas (caida)","🔴"))
-    if d[1]<0 and d[2]>0 and tamano(2)>tamano(1)*1.2:
-        patrones.append(("Envolvente alcista","🟢"))
-    if d[1]>0 and d[2]<0 and tamano(2)>tamano(1)*1.2:
-        patrones.append(("Envolvente bajista","🔴"))
-    if d[1]<0 and d[2]>abs(d[1])*1.5:
-        patrones.append(("Rebote fuerte","🟢"))
-    if d[1]>0 and abs(d[2])>d[1]*1.5 and d[2]<0:
-        patrones.append(("Rechazo bajista","🔴"))
-    return patrones[0] if patrones else ("Sin patron claro","⚪")
+    try:
+        if len(closes)<5: return "Sin datos","⚪"
+        c=closes[-4:]
+        d=[c[i+1]-c[i] for i in range(3)]
+        if len(d)<3 or d[1]==0: return "Sin patron claro","⚪"
+        patrones=[]
+        if abs(d[2])<abs(d[1])*0.1 and abs(d[2])<abs(d[0])*0.1:
+            patrones.append(("Doji (indecision)","⚪"))
+        if d[0]>0 and d[1]>0 and d[2]>0:
+            patrones.append(("3 velas verdes (impulso)","🟢"))
+        if d[0]<0 and d[1]<0 and d[2]<0:
+            patrones.append(("3 velas rojas (caida)","🔴"))
+        if d[1]<0 and d[2]>0 and abs(d[2])>abs(d[1])*1.2:
+            patrones.append(("Envolvente alcista","🟢"))
+        if d[1]>0 and d[2]<0 and abs(d[2])>abs(d[1])*1.2:
+            patrones.append(("Envolvente bajista","🔴"))
+        if d[1]<0 and d[2]>abs(d[1])*1.5:
+            patrones.append(("Rebote fuerte","🟢"))
+        if d[1]>0 and abs(d[2])>d[1]*1.5 and d[2]<0:
+            patrones.append(("Rechazo bajista","🔴"))
+        return patrones[0] if patrones else ("Sin patron claro","⚪")
+    except:
+        return "Sin datos","⚪"
 
 def pa_calidad(closes,n=10):
     if len(closes)<n+3: return 0.5
@@ -656,7 +659,7 @@ def se_card_html(se,fases_total=4):
     sl_tp=""
     if n==fases_total and se.get("sl") and se.get("tp") and se.get("precio"):
         rr=round((se["tp"]-se["precio"])/max(se["precio"]-se["sl"],1e-9),1)
-        sl_tp=f'<div class="divider"></div><div style="display:flex;justify-content:space-around"><span class="t-red">SL {fmt_p(se["sl"])}\</span><span class="t-green">TP {fmt_p(se["tp"])}\</span></div><div style="text-align:center;margin-top:4px" class="t-sub">ATR={fmt_p(se.get("atr"))} · R/R=1:{rr}</div>'
+        sl_tp=f'<div class="divider"></div><div style="display:flex;justify-content:space-around"><span class="t-red">SL {fmt_p(se["sl"])}<span><span class="t-green">TP {fmt_p(se["tp"])}<span></div><div style="text-align:center;margin-top:4px" class="t-sub">ATR={fmt_p(se.get("atr"))} · R/R=1:{rr}</div>'
     return f'<div class="card" style="border-color:{bdr}"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">🚦 SMART ENTRY — {fases_total} FASES</div><div style="font-weight:700;font-size:14px;margin-bottom:8px">{cab}</div><div class="divider"></div>{filas}{sl_tp}</div>'
 
 # ══════════════════════════════════════════════════════════════════

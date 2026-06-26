@@ -1,7 +1,7 @@
 """
 Quant Panel Web v3.0 — Streamlit Cloud
 Todo lo del V13: PA completo, Smart Entry 4F/3F, ML Lorentziana, LP/CP
-Fuente: CoinGecko (compatible con Streamlit Cloud)
+Fuentes: Binance (primario) → CoinMarketCap (fallback) → CoinGecko (supply/ATH)
 """
 import streamlit as st
 import time, math, re, xml.etree.ElementTree as ET
@@ -17,12 +17,17 @@ st.set_page_config(page_title="Quant Panel",page_icon="⚡",
                    layout="centered",initial_sidebar_state="collapsed")
 
 ANTHROPIC_KEY = st.secrets.get("ANTHROPIC_KEY","")
-CG_BASE       = "https://api.coingecko.com/api/v3"
-CG_DELAY      = 1.2
-MIN_VOL       = 1_000_000
-MAX_TOKENS    = 20
+CMC_KEY       = st.secrets.get("CMC_KEY","")        # opcional — activa fallback CMC
+
+BINANCE_BASE  = "https://api.binance.com/api/v3"
+CMC_BASE      = "https://pro-api.coinmarketcap.com/v1"
+CG_BASE       = "https://api.coingecko.com/api/v3"  # solo supply/ATH
+
+MIN_VOL       = 5_000_000
+MAX_TOKENS    = 604
+BINANCE_DELAY = 0.05   # Binance permite ~1200 req/min sin auth — muy rápido
 STABLECOINS   = {"usdt","usdc","busd","dai","tusd","fdusd","usdd","usdp","frax",
-                 "eur","gbp","try","brl","usde","pyusd","gusd","lusd","susd"}
+                 "eur","gbp","try","brl","usde","pyusd","gusd","lusd","susd","usd1","usdb"}
 
 EMA_LEN=50; RSI_LEN=10; RSI_OS=45; RSI_OB=65
 VOL_LEN=14; VOL_MULT=1.8; ATR_LEN=14; SL_M=3.0; TP_M=4.5
@@ -46,6 +51,8 @@ st.markdown("""<style>
 .t-yellow{color:#f59e0b;font-weight:600}.t-sub{color:#64748b;font-size:12px}
 .divider{border-top:1px solid #1e293b;margin:8px 0}
 h1{font-size:1.5rem!important}h3{font-size:1rem!important;margin-bottom:4px!important}
+.info-box{background:#0f172a;border:1px solid #1e3a5f;border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:#93c5fd}
+.source-badge{display:inline-block;background:#1e293b;color:#94a3b8;border-radius:4px;padding:1px 6px;font-size:10px;margin-left:6px}
 </style>""",unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════
@@ -91,7 +98,7 @@ def chop_metrics(c):
             "net":round((c[-1]-c[0])/c[0]*100,2)}
 
 # ══════════════════════════════════════════════════════════════════
-# PRICE ACTION COMPLETO (igual que V13)
+# PRICE ACTION COMPLETO
 # ══════════════════════════════════════════════════════════════════
 
 def pa_estructura(closes,n=20):
@@ -110,31 +117,23 @@ def pa_estructura(closes,n=20):
     return "LATERAL",0.3
 
 def pa_patron_velas(closes):
-    """Detecta patrones con solo closes (aproximación sin OHLC)."""
     if len(closes)<3: return "Sin datos","⚪"
     c=closes[-3:]; d=[c[i+1]-c[i] for i in range(2)]
     def es_verde(i): return d[i]>0
     def tamano(i):   return abs(d[i])
     patrones=[]
-    # Doji: cambio mínimo
     if tamano(2)<tamano(1)*0.1 and tamano(2)<tamano(0)*0.1:
         patrones.append(("Doji (indecisión)","⚪"))
-    # 3 velas verdes consecutivas
     if all(d[i]>0 for i in range(2)) and es_verde(2) and tamano(1)>0 and tamano(2)>0:
         patrones.append(("3 velas verdes (impulso)","🟢"))
-    # 3 velas rojas consecutivas
     if all(d[i]<0 for i in range(2)) and not es_verde(2):
         patrones.append(("3 velas rojas (caída)","🔴"))
-    # Envolvente alcista: roja luego verde más grande
     if d[1]<0 and d[2]>0 and tamano(2)>tamano(1)*1.2:
         patrones.append(("Envolvente alcista 📈","🟢"))
-    # Envolvente bajista: verde luego roja más grande
     if d[1]>0 and d[2]<0 and tamano(2)>tamano(1)*1.2:
         patrones.append(("Envolvente bajista 📉","🔴"))
-    # Rebote fuerte: caída seguida de subida mayor
     if d[1]<0 and d[2]>abs(d[1])*1.5:
         patrones.append(("Rebote fuerte ↗️","🟢"))
-    # Rechazo bajista: subida seguida de caída mayor
     if d[1]>0 and abs(d[2])>d[1]*1.5 and d[2]<0:
         patrones.append(("Rechazo bajista ↘️","🔴"))
     return patrones[0] if patrones else ("Sin patrón claro","⚪")
@@ -219,7 +218,6 @@ def smart_entry_cp(closes,volumes,pa=None):
 # ══════════════════════════════════════════════════════════════════
 
 def smart_entry_lp(closes,pa=None):
-    """3 fases: SMA50>SMA200, RSI(14d) 40-70, Price Action alcista."""
     base={"fases":{1:False,2:False,3:False},"vals":{},
           "fases_ok":0,"ok":False,"sl":None,"tp":None,"atr":None,"precio":None}
     if not closes or len(closes)<210: return base
@@ -247,42 +245,165 @@ def smart_entry_lp(closes,pa=None):
     return base
 
 # ══════════════════════════════════════════════════════════════════
-# SEÑAL ML — LORENTZIANA SIMPLIFICADA (como V13)
+# SEÑAL ML — LORENTZIANA SIMPLIFICADA
 # ══════════════════════════════════════════════════════════════════
 
 def senal_lorentziana(closes,lookahead=4,k=8):
-    """Clasificador k-NN con distancia Lorentziana sobre RSI y EMA."""
     if len(closes)<60: return None
-    rsi14=calc_rsi(closes,14)
-    ema20=calc_ema(closes,20)
-    n_rsi=len(rsi14); n_ema=len(ema20)
-    n=min(n_rsi,n_ema,len(closes))
+    rsi14=calc_rsi(closes,14); ema20=calc_ema(closes,20)
+    n=min(len(rsi14),len(ema20),len(closes))
     if n<lookahead+k+5: return None
-    # Normalizar features
     def norm(lst):
         mn,mx=min(lst),max(lst); r=mx-mn
         return [0.5 if r==0 else (x-mn)/r for x in lst]
-    # Alinear desde el final
-    c_al  =closes[-n:]
-    rsi_al=norm(rsi14[-n:])
-    ema_al=norm(ema20[-n:])
+    c_al=closes[-n:]; rsi_al=norm(rsi14[-n:]); ema_al=norm(ema20[-n:])
     muestras=n-lookahead
     etiquetas=[1 if c_al[i+lookahead]>c_al[i] else -1 for i in range(muestras)]
-    actual=[rsi_al[-1],ema_al[-1]]
-    distancias=[]
+    actual=[rsi_al[-1],ema_al[-1]]; distancias=[]
     for i in range(muestras):
         v=[rsi_al[i],ema_al[i]]
         d=sum(math.log(1+abs(a-b)) for a,b in zip(actual,v))
         distancias.append((d,etiquetas[i]))
     distancias.sort(key=lambda x:x[0])
     pred=sum(lbl for _,lbl in distancias[:k])
-    if pred>=k*0.5:   señal="🟢 COMPRA (ML)"
+    if pred>=k*0.5:    señal="🟢 COMPRA (ML)"
     elif pred<=-k*0.5: señal="🔴 VENTA (ML)"
     else:              señal="⚪ NEUTRAL (ML)"
     return {"señal":señal,"pred":pred,"k":k}
 
 # ══════════════════════════════════════════════════════════════════
-# COINGECKO — FUENTE DE DATOS
+# ██████╗ ██╗███╗   ██╗ █████╗ ███╗   ██╗ ██████╗███████╗
+# ██╔══██╗██║████╗  ██║██╔══██╗████╗  ██║██╔════╝██╔════╝
+# ██████╔╝██║██╔██╗ ██║███████║██╔██╗ ██║██║     █████╗
+# ██╔══██╗██║██║╚██╗██║██╔══██║██║╚██╗██║██║     ██╔══╝
+# ██████╔╝██║██║ ╚████║██║  ██║██║ ╚████║╚██████╗███████╗
+#  PRIMARIO — sin auth, 1200 req/min, pares USDT reales
+# ══════════════════════════════════════════════════════════════════
+
+@st.cache_data(ttl=60)
+def binance_get_usdt_pairs():
+    """
+    Obtiene TODOS los pares USDT de Binance con precio y volumen 24h.
+    Un solo request — devuelve instantáneo, sin paginación ni rate limit.
+    """
+    for attempt in range(3):
+      try:
+        r = requests.get(f"{BINANCE_BASE}/ticker/24hr", timeout=20)
+        if r.status_code == 429:
+            time.sleep(10 * (attempt + 1))
+            continue
+        r.raise_for_status()
+        tickers = r.json()
+        break
+      except requests.exceptions.Timeout:
+        if attempt == 2: return None, "timeout"
+        time.sleep(3)
+        continue
+      except Exception as e:
+        return None, str(e)
+    else:
+        return None, "max_retries"
+    try:
+        pass
+        pool = []
+        for t in tickers:
+            sym = t.get("symbol","")
+            if not sym.endswith("USDT"): continue
+            base = sym[:-4].lower()
+            if base in STABLECOINS: continue
+            vol_usd = float(t.get("quoteVolume", 0))
+            if vol_usd < MIN_VOL: continue
+            price = float(t.get("lastPrice", 0))
+            if price <= 0: continue
+            change = float(t.get("priceChangePercent", 0))
+            pool.append({
+                "symbol": base.upper(),
+                "binance_sym": sym,
+                "price": price,
+                "vol": vol_usd,
+                "change_24h": change
+            })
+        pool.sort(key=lambda x: x["vol"], reverse=True)
+        return pool[:MAX_TOKENS], "binance"
+    except Exception as e:
+        return None, str(e)
+
+@st.cache_data(ttl=300)
+def cmc_get_usdt_pairs():
+    """
+    Fallback: CoinMarketCap API — obtiene top 604 por volumen.
+    Requiere CMC_KEY en Streamlit Secrets.
+    """
+    if not CMC_KEY: return None, "sin_key"
+    try:
+        r = requests.get(f"{CMC_BASE}/cryptocurrency/listings/latest",
+            headers={"X-CMC_PRO_API_KEY": CMC_KEY},
+            params={"limit": MAX_TOKENS, "convert": "USD",
+                    "sort": "volume_24h", "sort_dir": "desc"},
+            timeout=15)
+        r.raise_for_status()
+        data = r.json().get("data", [])
+        pool = []
+        for coin in data:
+            sym = (coin.get("symbol") or "").lower()
+            if sym in STABLECOINS: continue
+            quote = coin.get("quote", {}).get("USD", {})
+            vol = quote.get("volume_24h") or 0
+            price = quote.get("price") or 0
+            if vol < MIN_VOL or price <= 0: continue
+            pool.append({
+                "symbol": coin["symbol"].upper(),
+                "binance_sym": coin["symbol"].upper() + "USDT",
+                "price": price,
+                "vol": vol,
+                "change_24h": quote.get("percent_change_24h") or 0
+            })
+        return pool[:MAX_TOKENS], "coinmarketcap"
+    except Exception as e:
+        return None, str(e)
+
+def build_pool():
+    """
+    Intenta Binance primero. Si falla, usa CoinMarketCap.
+    Retorna (pool, fuente).
+    """
+    pool, src = binance_get_usdt_pairs()
+    if pool:
+        return pool, "🟡 Binance"
+    pool, src = cmc_get_usdt_pairs()
+    if pool:
+        return pool, "🔵 CoinMarketCap"
+    return [], "❌ Sin fuente"
+
+def binance_ohlcv(symbol, interval="1h", limit=168):
+    """
+    OHLCV de Binance con retry (3 intentos). Funciona en movil con conexion lenta.
+    limit=168 = 7 dias en velas 1h / limit=200 = 200 dias en velas 1d
+    """
+    for attempt in range(3):
+        try:
+            r = requests.get(f"{BINANCE_BASE}/klines",
+                params={"symbol": symbol, "interval": interval, "limit": limit},
+                timeout=8)
+            if r.status_code == 429:
+                time.sleep(5 * (attempt + 1))
+                continue
+            if r.status_code == 400:
+                return None, None
+            r.raise_for_status()
+            klines = r.json()
+            if not klines: return None, None
+            closes  = [float(k[4]) for k in klines]
+            volumes = [float(k[5]) for k in klines]
+            return closes, volumes
+        except requests.exceptions.Timeout:
+            time.sleep(2 * (attempt + 1))
+        except:
+            time.sleep(1)
+    return None, None
+
+# ══════════════════════════════════════════════════════════════════
+# COINGECKO — solo para Supply / ATH / Unlocks (tab Análisis)
 # ══════════════════════════════════════════════════════════════════
 
 CG_MAP={
@@ -309,30 +430,8 @@ CG_MAP={
     "DYDX":"dydx","GMX":"gmx","JTO":"jito-governance-token",
     "PYTH":"pyth-network","JUP":"jupiter-exchange-solana","BONK":"bonk",
     "WIF":"dogwifcoin","HYPE":"hyperliquid","KAITO":"kaito",
-    "ALLO":"allo-protocol","OKB":"okb","CRO":"crypto-com-chain",
-    "ZEN":"zencash","GTC":"gitcoin","HIGH":"highstreet",
+    "OKB":"okb","CRO":"crypto-com-chain","ZEN":"zencash",
 }
-
-@st.cache_data(ttl=300)
-def cg_pool():
-    coins=[]
-    for page in range(1,3):
-        try:
-            r=requests.get(f"{CG_BASE}/coins/markets",
-                params={"vs_currency":"usd","order":"volume_desc","per_page":100,
-                        "page":page,"price_change_percentage":"24h","sparkline":"false"},
-                timeout=15)
-            r.raise_for_status(); coins.extend(r.json()); time.sleep(CG_DELAY)
-        except: break
-    return coins
-
-def cg_ohlcv(coin_id,days=7):
-    try:
-        r=requests.get(f"{CG_BASE}/coins/{coin_id}/market_chart",
-            params={"vs_currency":"usd","days":days},timeout=15)
-        r.raise_for_status(); d=r.json()
-        return [p[1] for p in d.get("prices",[])],[v[1] for v in d.get("total_volumes",[])]
-    except: return None,None
 
 @st.cache_data(ttl=3600)
 def get_cg_id(sym):
@@ -357,6 +456,7 @@ def get_supply(cg_id):
         r=requests.get(f"{CG_BASE}/coins/{cg_id}",
             params={"localization":"false","tickers":"false","market_data":"true",
                     "community_data":"false","developer_data":"false"},timeout=12)
+        if r.status_code!=200: return None
         d=r.json(); md=d.get("market_data",{})
         def fmt(v):
             if v is None: return "N/A"
@@ -451,21 +551,7 @@ def get_ai(sym,news):
 # SCANNER
 # ══════════════════════════════════════════════════════════════════
 
-def build_pool():
-    raw=cg_pool(); pool=[]
-    for coin in raw:
-        sym=(coin.get("symbol") or "").lower()
-        if sym in STABLECOINS: continue
-        vol=coin.get("total_volume") or 0
-        if vol<MIN_VOL: continue
-        pool.append({"symbol":coin["symbol"].upper(),"cg_id":coin["id"],
-                     "price":coin.get("current_price") or 0,"vol":vol,
-                     "change_24h":coin.get("price_change_percentage_24h_in_currency") or
-                                  coin.get("price_change_percentage_24h") or 0})
-    pool.sort(key=lambda x:x["vol"],reverse=True)
-    return pool[:MAX_TOKENS]
-
-def score_token(coin,closes,volumes):
+def score_token(coin, closes, volumes):
     m=chop_metrics(closes[-100:] if len(closes)>100 else closes)
     if not m: return None
     liq=math.log10(max(coin["vol"],1)); chop=m["chop"]
@@ -549,44 +635,81 @@ def se_card_html(se,fases_total=4):
 # ══════════════════════════════════════════════════════════════════
 
 st.markdown("# ⚡ Quant Panel")
-st.markdown('<p class="t-sub">Screener · Pionex · v3.0 — todo el V13</p>',unsafe_allow_html=True)
+st.markdown('<p class="t-sub">Screener · Pionex · v3.1 — Binance + CMC</p>',unsafe_allow_html=True)
 
 tab1,tab2,tab3=st.tabs(["📡 Scanner","📊 Análisis","⚙️ Ajustes"])
 
 # ── TAB 1 SCANNER ───────────────────────────────────────────────
 with tab1:
     st.markdown("### Mejores tokens para Grid Bot")
-    st.caption("CoinGecko · PA · Smart Entry 4 fases")
+
+    top_n = st.slider("Top resultados a mostrar", min_value=5, max_value=50, value=10, step=5)
+
     if "scan_results" not in st.session_state: st.session_state.scan_results=[]
+    if "scan_total"   not in st.session_state: st.session_state.scan_total=0
+    if "scan_source"  not in st.session_state: st.session_state.scan_source=""
+
     c1,c2=st.columns([2,1])
     with c1: run_btn=st.button("🔍 Escanear ahora",use_container_width=True,type="primary")
     with c2:
-        if st.session_state.scan_results: st.caption(f"✅ {len(st.session_state.scan_results)} tokens")
+        if st.session_state.scan_results:
+            st.caption(f"✅ {st.session_state.scan_total} tokens")
+
+    if st.session_state.scan_source:
+        src=st.session_state.scan_source
+        color="#f59e0b" if "Binance" in src else "#93c5fd"
+        st.markdown(f'<div class="info-box">Fuente de datos: <strong>{src}</strong> · PA · Smart Entry 4 fases · vol ≥ ${MIN_VOL/1e6:.0f}M</div>',unsafe_allow_html=True)
 
     if run_btn:
-        with st.status("Escaneando mercado...",expanded=True) as status:
-            st.write("Obteniendo top tokens de CoinGecko...")
-            pool=build_pool()
-            if not pool: st.error("No se pudo conectar a CoinGecko"); st.stop()
-            bar=st.progress(0); results=[]
-            for i,coin in enumerate(pool):
-                st.write(f"Analizando {coin['symbol']} ({i+1}/{len(pool)})...")
-                bar.progress((i+1)/len(pool))
-                closes,volumes=cg_ohlcv(coin["cg_id"],days=7)
-                if closes is None or len(closes)<20: time.sleep(CG_DELAY); continue
-                r=score_token(coin,closes,volumes)
-                if r: results.append(r)
-                time.sleep(CG_DELAY)
-            results.sort(key=lambda x:x["best_score"],reverse=True)
-            st.session_state.scan_results=results[:10]
-            status.update(label=f"✅ Top {len(results[:10])} tokens",state="complete")
+        with st.status("Escaneando mercado...", expanded=True) as status:
+            st.write("📡 Conectando a Binance...")
+            pool, src = build_pool()
 
-    for r in st.session_state.scan_results:
+            if not pool:
+                st.error("❌ Binance y CoinMarketCap fallaron. Revisa conexión.")
+                st.stop()
+
+            st.write(f"✅ {src} · {len(pool)} pares USDT encontrados (vol ≥ ${MIN_VOL/1e6:.0f}M)")
+            st.write(f"⚡ Descargando velas 1h de Binance para cada token...")
+
+            bar=st.progress(0); results=[]; errores=0
+            t_start=time.time()
+
+            for i, coin in enumerate(pool):
+                bar.progress((i+1)/len(pool))
+                if i % 25 == 0:
+                    elapsed=time.time()-t_start
+                    remaining=elapsed/(i+1)*(len(pool)-i-1)
+                    st.write(f"⏳ {i+1}/{len(pool)} · {len(results)} válidos · ~{int(remaining)}s restantes")
+
+                closes, volumes = binance_ohlcv(coin["binance_sym"], interval="1h", limit=168)
+                if closes is None or len(closes)<20:
+                    errores+=1
+                    time.sleep(BINANCE_DELAY)
+                    continue
+
+                r=score_token(coin, closes, volumes)
+                if r: results.append(r)
+                time.sleep(BINANCE_DELAY)
+
+            results.sort(key=lambda x: x["best_score"], reverse=True)
+            st.session_state.scan_results = results
+            st.session_state.scan_total   = len(pool)
+            st.session_state.scan_source  = src
+            elapsed=round(time.time()-t_start)
+            status.update(
+                label=f"✅ {len(results)} tokens analizados en {elapsed}s · {errores} sin datos",
+                state="complete"
+            )
+
+    for r in st.session_state.scan_results[:top_n]:
         pa=r["pa"]; se=r["se"]; pdet=se["ok"]; c24=r["change_24h"]
         cc="t-green" if c24>=0 else "t-red"
         pt='<span class="tag-pump">🔥 PUMP</span>' if pdet else ""
         n=se["fases_ok"]
-        se_h=f'<span class="tag-green">🟢×{n}</span>' if n==4 else f'<span class="tag-yellow">🟡{n}/4</span>' if n==3 else f'<span class="tag-red">🔴{n}/4</span>'
+        se_h=(f'<span class="tag-green">🟢×{n}</span>' if n==4
+              else f'<span class="tag-yellow">🟡{n}/4</span>' if n==3
+              else f'<span class="tag-red">🔴{n}/4</span>')
         pac={"green":"#10b981","red":"#ef4444","yellow":"#f59e0b"}.get(pa["color"],"#64748b")
         slt=""
         if pdet: slt=f'<div class="divider"></div><div style="display:flex;justify-content:space-around"><span class="t-red">SL {fmt_p(se.get("sl"))}</span><span class="t-green">TP {fmt_p(se.get("tp"))}</span></div>'
@@ -612,23 +735,24 @@ with tab2:
 
     c1,c2=st.columns([3,1])
     with c1:
-        sym_input=st.text_input("Ticker",placeholder="BTC, SOL, AAVE...",
+        sym_input=st.text_input("Ticker",placeholder="BTC, SOL, SYN...",
                                 label_visibility="collapsed").upper().strip()
     with c2:
         do_analyze=st.button("Analizar",type="primary",use_container_width=True)
 
     if do_analyze and sym_input:
-        with st.status(f"Analizando {sym_input} ({'LP' if es_lp else 'CP'})...",expanded=True) as status:
-            st.write("Buscando en CoinGecko...")
-            cg_id_val=get_cg_id(sym_input)
-            if not cg_id_val: st.error(f"No se encontró {sym_input}"); st.stop()
+        with st.status(f"Analizando {sym_input}...",expanded=True) as status:
+            binance_symbol = sym_input + "USDT"
             if es_lp:
-                st.write("Descargando velas diarias (200 días)...")
-                c,v=cg_ohlcv(cg_id_val,days=200)
+                st.write("Descargando velas diarias de Binance (200d)...")
+                c,v = binance_ohlcv(binance_symbol, interval="1d", limit=200)
             else:
-                st.write("Descargando velas horarias (7 días)...")
-                c,v=cg_ohlcv(cg_id_val,days=7)
-            if c is None or len(c)<20: st.error("Sin datos de velas"); st.stop()
+                st.write("Descargando velas horarias de Binance (7d)...")
+                c,v = binance_ohlcv(binance_symbol, interval="1h", limit=168)
+
+            if c is None or len(c)<20:
+                st.error(f"Sin datos de Binance para {sym_input}USDT"); st.stop()
+
             st.write("Price Action...")
             pa=analizar_pa(c[-50:],modo_rapido=False)
             if es_lp:
@@ -639,36 +763,31 @@ with tab2:
                 se=smart_entry_cp(c,v,pa=pa)
             st.write("Señal ML Lorentziana...")
             ml=senal_lorentziana(c)
-            st.write("Supply y ATH..."); supply=get_supply(cg_id_val)
+            st.write("Supply y ATH (CoinGecko)...")
+            cg_id_val=get_cg_id(sym_input)
+            supply=get_supply(cg_id_val) if cg_id_val else None
             st.write("Token unlocks..."); unlocks=get_unlocks(sym_input)
             st.write("Noticias RSS..."); news=get_news(sym_input)
             ai_text=None
             if ANTHROPIC_KEY: st.write("Resumen IA..."); ai_text=get_ai(sym_input,news)
             status.update(label=f"✅ {sym_input} analizado",state="complete")
 
-        # Precio
-        st.markdown(f'<div class="card"><div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:22px;font-weight:700;color:#f1f5f9">{sym_input}</span><span class="t-yellow" style="font-size:20px">{fmt_p(c[-1])}</span></div><div class="t-sub">{"📅 Largo Plazo · velas 1D" if es_lp else "⚡ Corto Plazo · velas 1H"}</div></div>',unsafe_allow_html=True)
-        # PA
+        cur_price = c[-1]
+        st.markdown(f'<div class="card"><div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:22px;font-weight:700;color:#f1f5f9">{sym_input}</span><span class="t-yellow" style="font-size:20px">{fmt_p(cur_price)}</span></div><div class="t-sub">{"📅 Largo Plazo · velas 1D" if es_lp else "⚡ Corto Plazo · velas 1H"} · Binance</div></div>',unsafe_allow_html=True)
         st.markdown(pa_card_html(pa),unsafe_allow_html=True)
-        # SE
         fases_total=3 if es_lp else 4
         st.markdown(se_card_html(se,fases_total=fases_total),unsafe_allow_html=True)
-        # ML
         if ml:
             ml_col="#10b981" if "COMPRA" in ml["señal"] else("#ef4444" if "VENTA" in ml["señal"] else "#64748b")
             st.markdown(f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:6px">🤖 SEÑAL ML LORENTZIANA</div><div style="color:{ml_col};font-size:14px;font-weight:600">{ml["señal"]}</div><div class="t-sub">Predicción: {ml["pred"]} sobre {ml["k"]} vecinos</div><div class="t-sub">⚠️ Aproximación simplificada — no es señal definitiva</div></div>',unsafe_allow_html=True)
-        # Supply
         if supply:
-            st.markdown(f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">💎 SUPPLY &amp; ATH</div><div style="display:flex;justify-content:space-around;text-align:center;margin-bottom:8px"><div><div class="t-sub">Supply Máx</div><div style="color:#f1f5f9">{supply["max"]}</div></div><div><div class="t-sub">Circulante</div><div style="color:#f1f5f9">{supply["circ"]}</div></div></div><div style="display:flex;justify-content:space-around;text-align:center"><div><div class="t-sub">ATH</div><div class="t-red">{supply["ath"]}</div><div class="t-sub">{supply["ath_date"]}</div></div><div><div class="t-sub">vs ATH</div><div style="color:#f1f5f9;font-size:15px">{supply["pct_ath"]}</div></div></div><div class="divider"></div><div class="t-sub">{supply["cats"]}</div></div>',unsafe_allow_html=True)
-        # Unlocks
+            st.markdown(f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">💎 SUPPLY &amp; ATH</div><div style="display:flex;justify-content:space-around;text-align:center;margin-bottom:8px"><div><div class="t-sub">Supply Máx</div><div style="color:#f1f5f9">{supply["max"]}</div></div><div><div class="t-sub">Circulante</div><div style="color:#f1f5f9">{supply["circ"]}</div></div></div><div style="display:flex;justify-content:space-around;text-align:center"><div><div class="t-sub">ATH</div><div class="t-red">{supply["ath"]}</div><div class="t-sub">{supply["ath_date"]}</div></div><div><div class="t-sup">vs ATH</div><div style="color:#f1f5f9;font-size:15px">{supply["pct_ath"]}</div></div></div><div class="divider"></div><div class="t-sub">{supply["cats"]}</div></div>',unsafe_allow_html=True)
         if unlocks:
             rows="".join(f'<div style="color:{"#ef4444" if u["urgent"] else "#f1f5f9"};font-size:12px;margin-bottom:4px">{"⚠️" if u["urgent"] else "📅"} {u["date"]} ({u["days"]}d) {u["cat"]}</div>' for u in unlocks)
             st.markdown(f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">🔓 TOKEN UNLOCKS (90d)</div>{rows}</div>',unsafe_allow_html=True)
-        # Noticias
         if news:
             rows="".join(f'<div style="font-size:12px;color:#f1f5f9;margin-bottom:5px">{n["sent"]} <span class="t-sub">[{n["src"]}]</span> {n["title"]}</div>' for n in news)
             st.markdown(f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">📰 NOTICIAS</div>{rows}</div>',unsafe_allow_html=True)
-        # IA
         if ai_text:
             rows=""
             for line in ai_text.splitlines():
@@ -684,15 +803,18 @@ with tab2:
 # ── TAB 3 AJUSTES ───────────────────────────────────────────────
 with tab3:
     st.markdown("### Ajustes")
-    st.code('# Streamlit Cloud → Settings → Secrets:\nANTHROPIC_KEY = "sk-ant-..."')
-    st.info("La key se configura en el dashboard de Streamlit Cloud.")
+    st.code('''# Streamlit Cloud → Settings → Secrets:
+ANTHROPIC_KEY = "sk-ant-..."   # opcional — análisis IA
+CMC_KEY = "..."                 # opcional — fallback si Binance falla''')
+    st.info("Las keys se configuran en el dashboard de Streamlit Cloud.")
     st.divider()
-    st.markdown("""**Quant Panel v3.0 — igual que V13 PC**
-- 📐 Price Action completo (estructura, patrones de velas, S/R)
-- 🚦 Smart Entry 4 fases (Corto Plazo: EMA+RSI+Vol+PA)
-- 📅 Smart Entry 3 fases (Largo Plazo: SMA50/200+RSI+PA)
-- 🤖 Señal ML Lorentziana simplificada
-- 💎 Supply · ATH/ATL · Token Unlocks
-- 📰 Noticias RSS · Análisis IA
+    st.markdown(f"""**Quant Panel v3.1 — Fuentes mejoradas**
+- 🟡 **Binance API** — primario: todos los pares USDT reales, sin rate limit, instantáneo
+- 🔵 **CoinMarketCap** — fallback automático si Binance falla (requiere CMC_KEY)
+- ⚪ **CoinGecko** — solo Supply, ATH y categorías en Análisis individual
+- 🔍 **Scanner**: hasta {MAX_TOKENS} pares · vol ≥ ${MIN_VOL/1e6:.0f}M · delay {BINANCE_DELAY}s
+- 📐 Price Action completo (estructura, patrones, S/R)
+- 🚦 Smart Entry 4 fases CP / 3 fases LP
+- 🤖 Señal ML Lorentziana · Supply · Unlocks · Noticias · IA
     """)
     st.caption("⚠️ Información de mercado. No es recomendación de inversión.")

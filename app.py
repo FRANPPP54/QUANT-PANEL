@@ -33,7 +33,7 @@ CG_BASE = "https://api.coingecko.com/api/v3"
 
 MIN_VOL = 25_000
 MAX_TOKENS = 604
-API_DELAY = 0.2
+API_DELAY = 0.08
 STABLECOINS = {
     "usdt", "usdc", "busd", "dai", "tusd", "fdusd", "usdd", "usdp", "frax",
     "eur", "gbp", "try", "brl", "usde", "pyusd", "gusd", "lusd", "susd",
@@ -49,6 +49,7 @@ VOL_MULT = 1.5
 ATR_LEN = 14
 SL_M = 3.0
 TP_M = 4.5
+SESSION = requests.Session()
 
 # ── CSS ─────────────────────────────────────────────────────────────
 st.markdown("""<style>
@@ -198,7 +199,7 @@ def detectar_pump_dump(closes, volumes, change_24h):
     except Exception:
         return None
 
-# ══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════��══════════
 # PRICE ACTION
 # ══════════════════════════════════════════════════════════════════
 
@@ -482,18 +483,18 @@ def api_get(url, params=None, timeout=15, retries=3):
     headers = {"User-Agent": "Mozilla/5.0 (compatible; QuantPanel/3.2)"}
     for attempt in range(retries):
         try:
-            r = requests.get(url, params=params, headers=headers, timeout=timeout)
+            r = SESSION.get(url, params=params, headers=headers, timeout=timeout)
             if r.status_code == 429:
-                time.sleep(10 * (attempt + 1))
+                time.sleep(6 * (attempt + 1))
                 continue
             if r.status_code in (400, 404):
                 return None
             r.raise_for_status()
             return r
         except requests.exceptions.Timeout:
-            time.sleep(2 * (attempt + 1))
+            time.sleep(1.5 * (attempt + 1))
         except Exception:
-            time.sleep(1)
+            time.sleep(0.6)
     return None
 
 
@@ -531,6 +532,7 @@ def kucoin_get_pool():
         return None, "kucoin_parse"
 
 
+@st.cache_data(ttl=180)
 def kucoin_ohlcv(symbol, interval="1hour", limit=168):
     now = int(time.time())
     start = now - (168 * 3600 if interval == "1hour" else 200 * 86400)
@@ -585,6 +587,7 @@ def coinpaprika_get_pool():
         return None, "cp_parse"
 
 
+@st.cache_data(ttl=600)
 def coinpaprika_ohlcv(cp_id, days=7):
     end = datetime.utcnow().strftime("%Y-%m-%d")
     start = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -676,7 +679,7 @@ def get_cg_id(sym):
             return m[0]["id"]
         if len(m) > 1:
             ids = ",".join(c["id"] for c in m[:15])
-            time.sleep(1.5)
+            time.sleep(1.2)
             r2 = api_get(
                 f"{CG_BASE}/coins/markets",
                 params={"vs_currency": "usd", "ids": ids, "order": "market_cap_desc"},
@@ -793,7 +796,7 @@ def get_news(sym):
     found = []
     for src, url in feeds:
         try:
-            r = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+            r = SESSION.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
             if r.status_code != 200:
                 continue
             root = ET.fromstring(r.content)
@@ -828,7 +831,7 @@ def get_ai(sym, news):
         f"POSITIVO: punto1 | punto2\nNEGATIVO: riesgo1 | riesgo2\nEVENTO: evento clave"
     )
     try:
-        r = requests.post(
+        r = SESSION.post(
             "https://api.anthropic.com/v1/messages",
             headers={
                 "x-api-key": ANTHROPIC_KEY,
@@ -1133,7 +1136,7 @@ with tab1:
 
             for i, coin in enumerate(pool):
                 bar.progress((i + 1) / len(pool))
-                if i % 25 == 0:
+                if i % 40 == 0:
                     elapsed = time.time() - t_start
                     rem = elapsed / (i + 1) * (len(pool) - i - 1) if i > 0 else 0
                     st.write(f"⏳ {i+1}/{len(pool)} · {len(results)} validos · ~{int(rem)}s restantes")
@@ -1141,13 +1144,13 @@ with tab1:
                 closes, volumes = get_ohlcv(coin)
                 if closes is None or len(closes) < 20:
                     errores += 1
-                    time.sleep(API_DELAY)
                     continue
 
                 r = score_token(coin, closes, volumes)
                 if r:
                     results.append(r)
-                time.sleep(API_DELAY)
+                if API_DELAY:
+                    time.sleep(API_DELAY)
 
             results.sort(key=lambda x: x["best_score"], reverse=True)
             st.session_state.scan_results = results

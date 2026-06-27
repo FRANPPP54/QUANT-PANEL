@@ -3,9 +3,13 @@ Quant Panel Web v3.2 — Streamlit Cloud
 Fuentes: KuCoin (primario) → CoinPaprika (fallback) → CoinGecko (supply/ATH)
 KuCoin y CoinPaprika no bloquean AWS/Streamlit Cloud.
 """
+import math
+import re
+import time
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
+
 import streamlit as st
-import time, math, re, xml.etree.ElementTree as ET
-from datetime import datetime, timezone, timedelta
 
 try:
     import requests
@@ -33,7 +37,7 @@ API_DELAY = 0.2
 STABLECOINS = {
     "usdt", "usdc", "busd", "dai", "tusd", "fdusd", "usdd", "usdp", "frax",
     "eur", "gbp", "try", "brl", "usde", "pyusd", "gusd", "lusd", "susd",
-    "usd1", "usdb", "usdttrc20"
+    "usd1", "usdb", "usdttrc20",
 }
 
 EMA_LEN = 50
@@ -195,7 +199,7 @@ def detectar_pump_dump(closes, volumes, change_24h):
         return None
 
 # ══════════════════════════════════════════════════════════════════
-# PRICE ACTION COMPLETO
+# PRICE ACTION
 # ══════════════════════════════════════════════════════════════════
 
 def pa_estructura(closes, n=20):
@@ -211,7 +215,7 @@ def pa_estructura(closes, n=20):
     if ht and lt:
         f = min((highs[-1] - highs[-2]) / highs[-2] * 10 + (lows[-1] - lows[-2]) / lows[-2] * 10, 1.0)
         return "ALCISTA (HH/HL)", round(f, 2)
-    elif not ht and not lt:
+    if not ht and not lt:
         f = min((highs[-2] - highs[-1]) / highs[-2] * 10 + (lows[-2] - lows[-1]) / lows[-2] * 10, 1.0)
         return "BAJISTA (LH/LL)", round(f, 2)
     return "LATERAL", 0.3
@@ -432,7 +436,7 @@ def smart_entry_lp(closes, pa=None):
     return base
 
 # ══════════════════════════════════════════════════════════════════
-# SEÑAL ML LORENTZIANA
+# SEÑAL ML
 # ══════════════════════════════════════════════════════════════════
 
 def senal_lorentziana(closes, lookahead=4, k=8):
@@ -471,7 +475,7 @@ def senal_lorentziana(closes, lookahead=4, k=8):
     return {"senal": senal, "pred": pred, "k": k}
 
 # ══════════════════════════════════════════════════════════════════
-# APIs
+# APIS
 # ══════════════════════════════════════════════════════════════════
 
 def api_get(url, params=None, timeout=15, retries=3):
@@ -529,10 +533,7 @@ def kucoin_get_pool():
 
 def kucoin_ohlcv(symbol, interval="1hour", limit=168):
     now = int(time.time())
-    if interval == "1hour":
-        start = now - 168 * 3600
-    else:
-        start = now - 200 * 86400
+    start = now - (168 * 3600 if interval == "1hour" else 200 * 86400)
     r = api_get(
         f"{KUCOIN_BASE}/market/candles",
         params={"symbol": symbol, "type": interval, "startAt": start, "endAt": now},
@@ -613,9 +614,12 @@ def coinpaprika_search_coin_id(sym):
     try:
         data = r.json()
         currencies = data.get("currencies", [])
-        for c in currencies:
-            if (c.get("symbol") or "").upper() == sym.upper():
-                return c.get("id")
+        exact = [c for c in currencies if (c.get("symbol") or "").upper() == sym.upper()]
+        if len(exact) == 1:
+            return exact[0].get("id")
+        if exact:
+            ranked = sorted(exact, key=lambda x: x.get("rank", 10**9) or 10**9)
+            return ranked[0].get("id")
         return currencies[0].get("id") if currencies else None
     except Exception:
         return None
@@ -845,7 +849,7 @@ def get_ai(sym, news):
         return None
 
 # ══════════════════════════════════════════════════════════════════
-# SCANNER
+# SCORING
 # ══════════════════════════════════════════════════════════════════
 
 def score_token(coin, closes, volumes):
@@ -906,7 +910,7 @@ def score_token(coin, closes, volumes):
     }
 
 # ══════════════════════════════════════════════════════════════════
-# HELPERS UI
+# HELPERS UI / CARDS
 # ══════════════════════════════════════════════════════════════════
 
 def fmt_p(v):
@@ -979,11 +983,11 @@ def se_card_html(se, fases_total=4):
     if n == fases_total and se.get("sl") and se.get("tp") and se.get("precio"):
         rr = round((se["tp"] - se["precio"]) / max(se["precio"] - se["sl"], 1e-9), 1)
         sl_tp = (
-            f'<div class="divider"></div>'
-            f'<div style="display:flex;justify-content:space-around">'
+            '<div class="divider"></div>'
+            '<div style="display:flex;justify-content:space-around">'
             f'<span class="t-red">SL {fmt_p(se["sl"])} </span>'
             f'<span class="t-green">TP {fmt_p(se["tp"])} </span>'
-            f'</div>'
+            '</div>'
             f'<div style="text-align:center;margin-top:4px" class="t-sub">ATR={fmt_p(se.get("atr"))} · R/R=1:{rr}</div>'
         )
 
@@ -993,6 +997,74 @@ def se_card_html(se, fases_total=4):
         f'<div style="font-weight:700;font-size:14px;margin-bottom:8px">{cab}</div>'
         f'<div class="divider"></div>{filas}{sl_tp}</div>'
     )
+
+
+def summary_card_html(sym_input, price, es_lp, fuente_analisis):
+    modo_txt = "📅 Largo Plazo · 1D" if es_lp else "⚡ Corto Plazo · 1H"
+    return (
+        f'<div class="card">'
+        f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
+        f'<span style="font-size:22px;font-weight:700;color:#f1f5f9">{sym_input}</span>'
+        f'<span class="t-yellow" style="font-size:20px">{fmt_p(price)}</span>'
+        f'</div>'
+        f'<div class="t-sub">{modo_txt} · {fuente_analisis}</div>'
+        f'</div>'
+    )
+
+
+def ml_card_html(ml):
+    ml_col = "#10b981" if "COMPRA" in ml["senal"] else ("#ef4444" if "VENTA" in ml["senal"] else "#64748b")
+    return (
+        f'<div class="card">'
+        f'<div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:6px">🤖 SEÑAL ML LORENTZIANA</div>'
+        f'<div style="color:{ml_col};font-size:14px;font-weight:600">{ml["senal"]}</div>'
+        f'<div class="t-sub">Prediccion: {ml["pred"]} sobre {ml["k"]} vecinos</div>'
+        f'</div>'
+    )
+
+
+def supply_card_html(supply):
+    return (
+        f'<div class="card">'
+        f'<div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">💎 SUPPLY &amp; ATH</div>'
+        f'<div style="display:flex;justify-content:space-around;text-align:center;margin-bottom:8px">'
+        f'<div><div class="t-sub">Supply Max</div><div style="color:#f1f5f9">{supply["max"]}</div></div>'
+        f'<div><div class="t-sub">Circulante</div><div style="color:#f1f5f9">{supply["circ"]}</div></div>'
+        f'</div>'
+        f'<div style="display:flex;justify-content:space-around;text-align:center">'
+        f'<div><div class="t-sub">ATH</div><div class="t-red">{supply["ath"]}</div><div class="t-sub">{supply["ath_date"]}</div></div>'
+        f'<div><div class="t-sub">vs ATH</div><div style="color:#f1f5f9;font-size:15px">{supply["pct_ath"]}</div></div>'
+        f'</div>'
+        f'<div class="divider"></div><div class="t-sub">{supply["cats"]}</div>'
+        f'</div>'
+    )
+
+
+def unlocks_card_html(unlocks):
+    rows = "".join(
+        f'<div style="color:{"#ef4444" if u["urgent"] else "#f1f5f9"};font-size:12px;margin-bottom:4px">'
+        f'{"⚠️" if u["urgent"] else "📅"} {u["date"]} ({u["days"]}d) {u["cat"]}</div>'
+        for u in unlocks
+    )
+    return f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">🔓 TOKEN UNLOCKS (90d)</div>{rows}</div>'
+
+
+def news_card_html(news):
+    rows = "".join(
+        f'<div style="font-size:12px;color:#f1f5f9;margin-bottom:5px">{n["sent"]} <span class="t-sub">[{n["src"]}]</span> {n["title"]}</div>'
+        for n in news
+    )
+    return f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">📰 NOTICIAS</div>{rows}</div>'
+
+
+def ai_card_html(ai_text):
+    rows = ""
+    for line in ai_text.splitlines():
+        if not line.strip():
+            continue
+        col = "#10b981" if "POSITIVO" in line else ("#ef4444" if "NEGATIVO" in line else "#f59e0b")
+        rows += f'<div style="color:{col};font-size:12px;margin-bottom:5px">{line}</div>'
+    return f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">🤖 ANALISIS IA</div>{rows}</div>'
 
 # ══════════════════════════════════════════════════════════════════
 # UI PRINCIPAL
@@ -1007,23 +1079,20 @@ tab1, tab2, tab3 = st.tabs(["📡 Scanner", "📊 Analisis", "⚙️ Ajustes"])
 with tab1:
     st.markdown("### Mejores tokens para Grid Bot")
 
-    VOL_OPCIONES = {
+    vol_opciones = {
         "25K  — todos los tokens": 25_000,
         "250K — tokens activos": 250_000,
         "500K — balance": 500_000,
         "1M   — mayor liquidez": 1_000_000,
         "5M   — solo grandes": 5_000_000,
     }
-    vol_label = st.selectbox("💧 Volumen mínimo 24h", list(VOL_OPCIONES.keys()), index=2)
-    vol_min = VOL_OPCIONES[vol_label]
+    vol_label = st.selectbox("💧 Volumen mínimo 24h", list(vol_opciones.keys()), index=2)
+    vol_min = vol_opciones[vol_label]
     top_n = st.slider("Top resultados a mostrar", min_value=5, max_value=50, value=10, step=5)
 
-    if "scan_results" not in st.session_state:
-        st.session_state.scan_results = []
-    if "scan_total" not in st.session_state:
-        st.session_state.scan_total = 0
-    if "scan_source" not in st.session_state:
-        st.session_state.scan_source = ""
+    st.session_state.setdefault("scan_results", [])
+    st.session_state.setdefault("scan_total", 0)
+    st.session_state.setdefault("scan_source", "")
 
     c1, c2 = st.columns([2, 1])
     with c1:
@@ -1119,11 +1188,11 @@ with tab1:
         slt = ""
         if pdet:
             slt = (
-                f'<div class="divider"></div>'
-                f'<div style="display:flex;justify-content:space-around">'
+                '<div class="divider"></div>'
+                '<div style="display:flex;justify-content:space-around">'
                 f'<span class="t-red">SL {fmt_p(se.get("sl"))}</span>'
                 f'<span class="t-green">TP {fmt_p(se.get("tp"))}</span>'
-                f'</div>'
+                '</div>'
             )
 
         st.markdown(
@@ -1202,58 +1271,21 @@ with tab2:
                 ai_text = get_ai(sym_input, news)
             status.update(label=f"✅ {sym_input} analizado", state="complete")
 
-        st.markdown(
-            f'<div class="card"><div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:22px;font-weight:700;color:#f1f5f9">{sym_input}</span><span class="t-yellow" style="font-size:20px">{fmt_p(c[-1])}</span></div><div class="t-sub">{"📅 Largo Plazo · 1D" if es_lp else "⚡ Corto Plazo · 1H"} · {fuente_analisis}</div></div>',
-            unsafe_allow_html=True,
-        )
+        st.markdown(summary_card_html(sym_input, c[-1], es_lp, fuente_analisis), unsafe_allow_html=True)
         st.markdown(pa_card_html(pa), unsafe_allow_html=True)
         fases_total = 3 if es_lp else 4
         st.markdown(se_card_html(se, fases_total=fases_total), unsafe_allow_html=True)
 
         if ml:
-            ml_col = "#10b981" if "COMPRA" in ml["senal"] else ("#ef4444" if "VENTA" in ml["senal"] else "#64748b")
-            st.markdown(
-                f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:6px">🤖 SEÑAL ML LORENTZIANA</div><div style="color:{ml_col};font-size:14px;font-weight:600">{ml["senal"]}</div><div class="t-sub">Prediccion: {ml["pred"]} sobre {ml["k"]} vecinos</div></div>',
-                unsafe_allow_html=True,
-            )
-
+            st.markdown(ml_card_html(ml), unsafe_allow_html=True)
         if supply:
-            st.markdown(
-                f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">💎 SUPPLY &amp; ATH</div><div style="display:flex;justify-content:space-around;text-align:center;margin-bottom:8px"><div><div class="t-sub">Supply Max</div><div style="color:#f1f5f9">{supply["max"]}</div></div><div><div class="t-sub">Circulante</div><div style="color:#f1f5f9">{supply["circ"]}</div></div></div><div style="display:flex;justify-content:space-around;text-align:center"><div><div class="t-sub">ATH</div><div class="t-red">{supply["ath"]}</div><div class="t-sub">{supply["ath_date"]}</div></div><div><div class="t-sub">vs ATH</div><div style="color:#f1f5f9;font-size:15px">{supply["pct_ath"]}</div></div></div><div class="divider"></div><div class="t-sub">{supply["cats"]}</div></div>',
-                unsafe_allow_html=True,
-            )
-
+            st.markdown(supply_card_html(supply), unsafe_allow_html=True)
         if unlocks:
-            rows = "".join(
-                f'<div style="color:{"#ef4444" if u["urgent"] else "#f1f5f9"};font-size:12px;margin-bottom:4px">{"⚠️" if u["urgent"] else "📅"} {u["date"]} ({u["days"]}d) {u["cat"]}</div>'
-                for u in unlocks
-            )
-            st.markdown(
-                f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">🔓 TOKEN UNLOCKS (90d)</div>{rows}</div>',
-                unsafe_allow_html=True,
-            )
-
+            st.markdown(unlocks_card_html(unlocks), unsafe_allow_html=True)
         if news:
-            rows = "".join(
-                f'<div style="font-size:12px;color:#f1f5f9;margin-bottom:5px">{n["sent"]} <span class="t-sub">[{n["src"]}]</span> {n["title"]}</div>'
-                for n in news
-            )
-            st.markdown(
-                f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">📰 NOTICIAS</div>{rows}</div>',
-                unsafe_allow_html=True,
-            )
-
+            st.markdown(news_card_html(news), unsafe_allow_html=True)
         if ai_text:
-            rows = ""
-            for line in ai_text.splitlines():
-                if not line.strip():
-                    continue
-                col = "#10b981" if "POSITIVO" in line else ("#ef4444" if "NEGATIVO" in line else "#f59e0b")
-                rows += f'<div style="color:{col};font-size:12px;margin-bottom:5px">{line}</div>'
-            st.markdown(
-                f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">🤖 ANALISIS IA</div>{rows}</div>',
-                unsafe_allow_html=True,
-            )
+            st.markdown(ai_card_html(ai_text), unsafe_allow_html=True)
         elif not ANTHROPIC_KEY:
             st.info("💡 Agrega ANTHROPIC_KEY en Streamlit Secrets para activar el analisis IA.")
     elif do_analyze:

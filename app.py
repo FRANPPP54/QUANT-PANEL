@@ -29,7 +29,7 @@ STABLECOINS   = {"usdt","usdc","busd","dai","tusd","fdusd","usdd","usdp","frax",
                  "eur","gbp","try","brl","usde","pyusd","gusd","lusd","susd","usd1","usdb","usdttrc20"}
 
 EMA_LEN=50; RSI_LEN=10; RSI_OS=45; RSI_OB=65
-VOL_LEN=14; VOL_MULT=1.8; ATR_LEN=14; SL_M=3.0; TP_M=4.5
+VOL_LEN=14; VOL_MULT=1.5; ATR_LEN=14; SL_M=3.0; TP_M=4.5
 
 # ── CSS ─────────────────────────────────────────────────────────────
 st.markdown("""<style>
@@ -200,10 +200,20 @@ def smart_entry_cp(closes,volumes,pa=None):
     r10s=calc_rsi(closes,RSI_LEN); r10=r10s[-1] if r10s else None
     f2=bool(r10 and RSI_OS<r10<RSI_OB)
     base["fases"][2]=f2; base["vals"][2]=f"RSI(10)={r10:.1f}" if r10 else "N/A"
-    vsma=calc_sma(volumes,VOL_LEN); vm=vsma[-1] if vsma else None
-    vr=round(volumes[-1]/vm,2) if vm and vm>0 else 0
-    f3=vr>=VOL_MULT
-    base["fases"][3]=f3; base["vals"][3]=f"Vol ratio={vr}x (min {VOL_MULT}x)"
+    # F3: Volumen sostenido — promedio 24h >= 110% del promedio 7 dias anteriores
+    # Detecta consolidacion post-impulso, no spike puntual
+    if len(volumes) >= VOL_LEN + 24:
+        vol_24h   = sum(volumes[-24:]) / 24          # promedio ultimas 24 velas
+        vol_prev  = sum(volumes[-VOL_LEN-24:-24]) / VOL_LEN  # promedio 7d anteriores
+        vr = round(vol_24h / vol_prev, 2) if vol_prev > 0 else 0
+        f3 = vr >= 1.1                               # 10% por encima del promedio historico
+        base["vals"][3] = f"Vol 24h={vr}x vs historico (min 1.1x)"
+    else:
+        vsma=calc_sma(volumes,VOL_LEN); vm=vsma[-1] if vsma else None
+        vr=round(volumes[-1]/vm,2) if vm and vm>0 else 0
+        f3=vr>=VOL_MULT
+        base["vals"][3]=f"Vol ratio={vr}x (min {VOL_MULT}x)"
+    base["fases"][3]=f3
     pa_l=pa or analizar_pa(closes[-50:],modo_rapido=True)
     f4=("ALCISTA" in pa_l["estructura"] and pa_l["calidad"]>=0.55)
     base["fases"][4]=f4; base["vals"][4]=f"{pa_l['estructura']} cal={pa_l['calidad']}"

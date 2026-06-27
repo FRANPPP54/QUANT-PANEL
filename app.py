@@ -22,7 +22,7 @@ KUCOIN_BASE   = "https://api.kucoin.com/api/v1"
 CP_BASE       = "https://api.coinpaprika.com/v1"
 CG_BASE       = "https://api.coingecko.com/api/v3"
 
-MIN_VOL       = 50_000     # filtro base — la UI permite subir desde aquí
+MIN_VOL       = 25_000     # filtro base — la UI permite subir desde aquí
 MAX_TOKENS    = 604
 API_DELAY     = 0.2
 STABLECOINS   = {"usdt","usdc","busd","dai","tusd","fdusd","usdd","usdp","frax",
@@ -94,6 +94,87 @@ def chop_metrics(c):
     return {"chop":round(chop,2),"vol":round(vol,2),
             "range":round((max(c)-min(c))/p0*100,2),
             "net":round((c[-1]-c[0])/c[0]*100,2)}
+
+# ══════════════════════════════════════════════════════════════════
+# PUMP / DUMP DETECTOR
+# ══════════════════════════════════════════════════════════════════
+
+def detectar_pump_dump(closes, volumes, change_24h):
+    """
+    Detecta pumps y dumps en curso o recientes.
+    Retorna dict con tipo, intensidad y fase.
+    """
+    if len(closes) < 24 or len(volumes) < 24:
+        return None
+    try:
+        # Precio
+        c_now   = closes[-1]
+        c_1h    = closes[-2]  if len(closes)>1  else c_now
+        c_4h    = closes[-4]  if len(closes)>4  else c_now
+        c_12h   = closes[-12] if len(closes)>12 else c_now
+        c_24h   = closes[-24] if len(closes)>24 else c_now
+
+        move_1h  = (c_now - c_1h)  / max(c_1h,  1e-9) * 100
+        move_4h  = (c_now - c_4h)  / max(c_4h,  1e-9) * 100
+        move_12h = (c_now - c_12h) / max(c_12h, 1e-9) * 100
+
+        # Volumen
+        vol_now  = sum(volumes[-3:])  / 3
+        vol_base = sum(volumes[-24:-3]) / 21
+        vol_ratio = vol_now / max(vol_base, 1e-9)
+
+        resultado = {
+            "tipo": None,
+            "fase": None,
+            "intensidad": None,
+            "move_1h": round(move_1h, 1),
+            "move_4h": round(move_4h, 1),
+            "move_12h": round(move_12h, 1),
+            "vol_ratio": round(vol_ratio, 1),
+            "change_24h": round(change_24h, 1),
+        }
+
+        # ── PUMP DETECTOR ──────────────────────────────────────
+        # Pump en curso: subida fuerte + volumen elevado
+        if move_1h > 5 and vol_ratio > 2.0:
+            resultado["tipo"] = "PUMP"
+            resultado["fase"] = "EN CURSO 🚀"
+            resultado["intensidad"] = "FUERTE" if move_1h > 10 else "MODERADO"
+
+        # Pump reciente: subida 4h fuerte pero 1h enfriando
+        elif move_4h > 10 and move_1h < 2 and vol_ratio > 1.3:
+            resultado["tipo"] = "PUMP"
+            resultado["fase"] = "CONSOLIDANDO ⏸️"
+            resultado["intensidad"] = "FUERTE" if move_4h > 20 else "MODERADO"
+
+        # Pump agotado: subió mucho pero volumen cayendo
+        elif change_24h > 15 and vol_ratio < 0.7 and move_1h < 0:
+            resultado["tipo"] = "PUMP"
+            resultado["fase"] = "AGOTADO ⚠️"
+            resultado["intensidad"] = "CUIDADO"
+
+        # ── DUMP DETECTOR ──────────────────────────────────────
+        # Dump en curso: caída fuerte + volumen elevado
+        elif move_1h < -5 and vol_ratio > 2.0:
+            resultado["tipo"] = "DUMP"
+            resultado["fase"] = "EN CURSO 💥"
+            resultado["intensidad"] = "FUERTE" if move_1h < -10 else "MODERADO"
+
+        # Dump reciente: caída 4h fuerte pero 1h frenando
+        elif move_4h < -10 and move_1h > -2 and vol_ratio > 1.3:
+            resultado["tipo"] = "DUMP"
+            resultado["fase"] = "FRENANDO 🛑"
+            resultado["intensidad"] = "POSIBLE REBOTE"
+
+        # Dump agotado: cayó mucho + volumen bajando
+        elif change_24h < -15 and vol_ratio < 0.7 and move_1h > 0:
+            resultado["tipo"] = "DUMP"
+            resultado["fase"] = "POSIBLE SUELO 📍"
+            resultado["intensidad"] = "REBOTE POSIBLE"
+
+        return resultado if resultado["tipo"] else None
+    except:
+        return None
 
 # ══════════════════════════════════════════════════════════════════
 # PRICE ACTION COMPLETO
@@ -591,7 +672,7 @@ def get_ai(sym,news):
 
 # ══════════════════════════════════════════════════════════════════
 # SCANNER
-# ══════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════��════════════════════
 
 def score_token(coin, closes, volumes):
     m=chop_metrics(closes[-100:] if len(closes)>100 else closes)
@@ -618,10 +699,11 @@ def score_token(coin, closes, volumes):
     best=max(scores,key=scores.get)
     pa=analizar_pa(closes[-50:],modo_rapido=True)
     se=smart_entry_cp(closes,volumes,pa=pa)
+    pd=detectar_pump_dump(closes,volumes,c24)
     return {"token":coin["symbol"],"price":coin["price"],"change_24h":c24,
             "chop":chop,"vol_h":vol,"range":m["range"],
             "liq_m":round(coin["vol"]/1e6,1),"trend_ok":trend_ok,
-            "pa":pa,"se":se,"best":best,"best_score":round(scores[best],1)}
+            "pa":pa,"se":se,"pd":pd,"best":best,"best_score":round(scores[best],1)}
 
 # ══════════════════════════════════════════════════════════════════
 # HELPERS UI
@@ -669,7 +751,7 @@ def se_card_html(se,fases_total=4):
     sl_tp=""
     if n==fases_total and se.get("sl") and se.get("tp") and se.get("precio"):
         rr=round((se["tp"]-se["precio"])/max(se["precio"]-se["sl"],1e-9),1)
-        sl_tp=f'<div class="divider"></div><div style="display:flex;justify-content:space-around"><span class="t-red">SL {fmt_p(se["sl"])}<span><span class="t-green">TP {fmt_p(se["tp"])}<span></div><div style="text-align:center;margin-top:4px" class="t-sub">ATR={fmt_p(se.get("atr"))} · R/R=1:{rr}</div>'
+        sl_tp=f'<div class="divider"></div><div style="display:flex;justify-content:space-around"><span class="t-red">SL {fmt_p(se["sl"])}</span><span class="t-green">TP {fmt_p(se["tp"])}</span></div><div style="text-align:center;margin-top:4px" class="t-sub">ATR={fmt_p(se.get("atr"))} · R/R=1:{rr}</div>'
     return f'<div class="card" style="border-color:{bdr}"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">🚦 SMART ENTRY — {fases_total} FASES</div><div style="font-weight:700;font-size:14px;margin-bottom:8px">{cab}</div><div class="divider"></div>{filas}{sl_tp}</div>'
 
 # ══════════════════════════════════════════════════════════════════
@@ -687,7 +769,7 @@ with tab1:
 
     # Filtro de volumen mínimo — seleccionable sin tocar código
     VOL_OPCIONES = {
-        "50K  — todos los tokens": 50_000,
+        "25K  — todos los tokens": 25_000,
         "250K — tokens activos":   250_000,
         "500K — balance":          500_000,
         "1M   — mayor liquidez":   1_000_000,
@@ -767,8 +849,20 @@ with tab1:
 
     for r in st.session_state.scan_results[:top_n]:
         pa=r["pa"]; se=r["se"]; pdet=se["ok"]; c24=r["change_24h"]
+        pd=r.get("pd")
         cc="t-green" if c24>=0 else "t-red"
         pt='<span class="tag-pump">🔥 PUMP</span>' if pdet else ""
+        # Pump/Dump badge
+        if pd:
+            pd_color = "#10b981" if pd["tipo"]=="PUMP" else "#ef4444"
+            pd_bg    = "#052e16" if pd["tipo"]=="PUMP" else "#450a0a"
+            pd_icon  = "🚀" if pd["tipo"]=="PUMP" else "💥"
+            pd_html  = f'''<div style="background:{pd_bg};border-radius:6px;padding:4px 8px;margin:4px 0;font-size:11px">
+                {pd_icon} <strong style="color:{pd_color}">{pd["tipo"]} {pd["fase"]}</strong>
+                <span style="color:#94a3b8"> · 1h:{pd["move_1h"]:+.1f}% 4h:{pd["move_4h"]:+.1f}% Vol:{pd["vol_ratio"]}x</span>
+                </div>'''
+        else:
+            pd_html = ""
         n=se["fases_ok"]
         se_h=(f'<span class="tag-green">🟢x{n}</span>' if n==4
               else f'<span class="tag-yellow">🟡{n}/4</span>' if n==3
@@ -786,6 +880,7 @@ with tab1:
                 <span class="tag-bot">{r['best']}</span><span class="tag-score">Score {r['best_score']}</span>{se_h}
             </div>
             <div style="color:{pac};font-size:12px">{pa['veredicto']}</div>
+            {pd_html}
             <div class="t-sub">Chop {r['chop']} · Vol {r['vol_h']:.1f}% · {r['liq_m']}M$</div>
             {slt}</div>""", unsafe_allow_html=True)
 

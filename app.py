@@ -34,7 +34,7 @@ VOL_LEN=14; VOL_MULT=1.5; ATR_LEN=14; SL_M=3.0; TP_M=4.5
 SESSION = requests.Session()
 
 # ── Donaciones — configurar aquí ──────────────────────────────────
-DONATE_COFFEE  = "https://buymeacoffee.com/TU_USUARIO"   # reemplazar
+DONATE_COFFEE  = "https://buymeacoffee.com/CryptoQuantPanel"
 DONATE_BTC     = "TU_DIRECCIÓN_BTC_AQUÍ"
 DONATE_ETH     = "TU_DIRECCIÓN_ETH_AQUÍ"
 DONATE_TRC20   = "TU_DIRECCIÓN_TRC20_AQUÍ"
@@ -491,6 +491,100 @@ def get_top_gainers_kucoin(limit=10):
         gainers.sort(key=lambda x:x["change_24h"],reverse=True)
         return gainers[:limit]
     except Exception: return []
+
+@st.cache_data(ttl=900)
+def get_new_gems(limit=20):
+    """Tokens con supply < 100M, fundamentos sólidos y respaldo financiero.
+    Criterios:
+    - Supply total < 100 millones de tokens (escasez)
+    - Market cap entre $500K y $500M (no micro-cap ni mega-cap)
+    - Volumen 24h > $100K (liquidez real)
+    - FDV/MC ratio < 5 (poca dilución futura)
+    - No stablecoins, no meme coins conocidos
+    Fuente: CoinGecko /coins/markets (gecko_desc = proyectos con mejor score de calidad)
+    """
+    MEME_EXCL = {"doge","shib","pepe","floki","bonk","wif","meme","babydoge",
+                 "safepal","grok","turbo","dogwifhat","coq","pnut","neiro","popcat"}
+    results=[]
+    # Dos páginas para tener más candidatos
+    for page in range(1,3):
+        r=api_get(f"{CG_BASE}/coins/markets",
+            params={"vs_currency":"usd","order":"gecko_desc",
+                    "per_page":100,"page":page,
+                    "sparkline":"false",
+                    "price_change_percentage":"24h,7d"},
+            timeout=10, retries=1)
+        if r is None: break
+        try:
+            for c in r.json():
+                sym=(c.get("symbol") or "").lower()
+                if sym in STABLECOINS or sym in MEME_EXCL: continue
+
+                total_supply = c.get("total_supply")   or 0
+                circ_supply  = c.get("circulating_supply") or 0
+                max_supply   = c.get("max_supply")     or total_supply or 0
+                mc    = c.get("market_cap")   or 0
+                fdv   = c.get("fully_diluted_valuation") or 0
+                vol   = c.get("total_volume") or 0
+                price = c.get("current_price") or 0
+                rank  = c.get("market_cap_rank")
+
+                # Filtro 1: supply < 100M (si hay dato)
+                supply_check = total_supply or circ_supply
+                if supply_check > 100_000_000: continue
+
+                # Filtro 2: MC entre $500K y $500M
+                if mc < 500_000 or mc > 500_000_000: continue
+
+                # Filtro 3: volumen mínimo $100K
+                if vol < 100_000: continue
+
+                # Filtro 4: precio válido
+                if price <= 0: continue
+
+                # Score de calidad (mayor = mejor)
+                fdv_mc  = round(fdv/mc, 1)   if fdv and mc > 0 else None
+                vol_mc  = round(vol/mc, 3)   if mc > 0 else 0
+                circ_pct= round(circ_supply/total_supply*100,1) if total_supply>0 and circ_supply>0 else None
+
+                # Penalizar alta dilución futura
+                quality = 10
+                if fdv_mc and fdv_mc > 5:  quality -= 3
+                if fdv_mc and fdv_mc > 10: quality -= 3
+                if circ_pct and circ_pct < 20: quality -= 2  # <20% circulante = mucho unlock por venir
+
+                c24 = round(c.get("price_change_percentage_24h") or 0, 1)
+                c7d = round(c.get("price_change_percentage_7d_in_currency") or 0, 1)
+
+                def fmt_supply(v):
+                    if v>=1e6: return f"{v/1e6:.1f}M"
+                    if v>=1e3: return f"{v/1e3:.0f}K"
+                    return str(int(v))
+
+                results.append({
+                    "symbol":    c.get("symbol","").upper(),
+                    "name":      c.get("name",""),
+                    "price":     price,
+                    "change_24h":c24,
+                    "change_7d": c7d,
+                    "mc":        mc,
+                    "vol":       vol,
+                    "supply_fmt":fmt_supply(supply_check) if supply_check else "N/A",
+                    "fdv_mc":    fdv_mc,
+                    "circ_pct":  circ_pct,
+                    "vol_mc":    vol_mc,
+                    "rank":      rank,
+                    "quality":   quality,
+                })
+        except Exception: continue
+
+    # Ordenar por calidad desc, luego volumen desc
+    results.sort(key=lambda x: (x["quality"], x["vol"]), reverse=True)
+    # Deduplicar por símbolo
+    seen=set(); unique=[]
+    for r in results:
+        if r["symbol"] not in seen: seen.add(r["symbol"]); unique.append(r)
+    return unique[:limit]
 
 # ── CoinPaprika: fundamentals fallback (sin rate limit, funciona en Render) ──
 @st.cache_data(ttl=3600)
@@ -1269,6 +1363,78 @@ with tab3:
                     st.session_state["analisis_trigger"] = True
         else:
             st.caption("Escanea primero para ver gainers" if st.session_state.lang=="es" else "Run a scan first to see gainers")
+
+    # ── New Gems ───────────────────────────────────────────────────
+    st.divider()
+    gems_title = "💎 New Gems — Supply < 100M · Proyectos sólidos" if st.session_state.lang=="es" else "💎 New Gems — Supply < 100M · Solid projects"
+    st.markdown(f"**{gems_title}**")
+    gems_sub = "Tokens con baja dilución, respaldo financiero y menos de 100M tokens en circulación" if st.session_state.lang=="es" else "Low dilution tokens with financial backing and less than 100M circulating supply"
+    st.caption(gems_sub)
+
+    with st.spinner("Buscando gems..." if st.session_state.lang=="es" else "Searching gems..."):
+        gems = get_new_gems(limit=hot_limit)
+
+    if gems:
+        def fmt_mc(v):
+            if v>=1e9: return f"${v/1e9:.1f}B"
+            if v>=1e6: return f"${v/1e6:.1f}M"
+            if v>=1e3: return f"${v/1e3:.0f}K"
+            return f"${v:.0f}"
+
+        for g in gems:
+            c24=g["change_24h"]; c7d=g["change_7d"]
+            cc24="t-green" if c24>=0 else "t-red"
+            cc7d ="t-green" if c7d >=0 else "t-red"
+            fdv_mc_txt = f"FDV/MC: {g['fdv_mc']}x" if g["fdv_mc"] else ""
+            fdv_mc_col = "#10b981" if (g["fdv_mc"] or 99)<3 else ("#f59e0b" if (g["fdv_mc"] or 99)<6 else "#ef4444")
+            circ_txt = f"Circ: {g['circ_pct']}%" if g["circ_pct"] else ""
+            q = g["quality"]
+            q_col = "#10b981" if q>=8 else ("#f59e0b" if q>=5 else "#ef4444")
+            rank_txt = f"#{g['rank']}" if g["rank"] else "—"
+
+            st.markdown(f"""
+            <div class="card" style="border-color:#1e3a5f">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <div>
+                  <span style="color:#f1f5f9;font-weight:700;font-size:15px">{g['symbol']}</span>
+                  <span class="t-sub" style="margin-left:6px">{g['name'][:20]}</span>
+                </div>
+                <span style="color:#f59e0b;font-weight:600">{fmt_p(g['price'])}</span>
+              </div>
+              <div style="display:flex;gap:10px;flex-wrap:wrap;margin:5px 0">
+                <span class="{cc24}">24h: {c24:+.1f}%</span>
+                <span class="{cc7d}">7d: {c7d:+.1f}%</span>
+                <span class="t-sub">{rank_txt}</span>
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;margin:4px 0">
+                <span style="background:#0f172a;border-radius:5px;padding:2px 6px;font-size:11px;color:#93c5fd">
+                  Supply: {g['supply_fmt']}
+                </span>
+                <span style="background:#0f172a;border-radius:5px;padding:2px 6px;font-size:11px;color:#64748b">
+                  MC: {fmt_mc(g['mc'])}
+                </span>
+                {f'<span style="background:#0f172a;border-radius:5px;padding:2px 6px;font-size:11px;color:{fdv_mc_col}">{fdv_mc_txt}</span>' if fdv_mc_txt else ""}
+                {f'<span style="background:#0f172a;border-radius:5px;padding:2px 6px;font-size:11px;color:#64748b">{circ_txt}</span>' if circ_txt else ""}
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">
+                <span style="font-size:11px;color:#64748b">Vol 24h: {fmt_mc(g['vol'])}</span>
+                <span style="font-size:11px;color:{q_col}">Calidad: {q}/10</span>
+              </div>
+            </div>""", unsafe_allow_html=True)
+
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button(f"📊 Analizar {g['symbol']}", key=f"gem_{g['symbol']}", use_container_width=True):
+                    st.session_state["analisis_sym"] = g["symbol"]
+                    st.session_state["analisis_trigger"] = True
+            with c2:
+                st.markdown(
+                    f'<a href="{PIONEX_REF}" target="_blank" style="display:block;text-align:center;'
+                    f'background:#f59e0b;color:#000;border-radius:8px;padding:6px;'
+                    f'font-size:12px;font-weight:700;text-decoration:none;">{L["pionex_btn"]}</a>',
+                    unsafe_allow_html=True)
+    else:
+        st.info("CoinGecko no respondió — intentá de nuevo en 1 minuto." if st.session_state.lang=="es" else "CoinGecko unavailable — try again in 1 minute.")
 
 with tab4:
     st.markdown("### 🌟 Tokens con Potencial")

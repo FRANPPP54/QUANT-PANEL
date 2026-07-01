@@ -283,7 +283,7 @@ def senal_lorentziana(closes,lookahead=4,k=8):
     return {"senal":senal,"pred":pred,"k":k}
 
 # ── APIs ──
-def api_get(url,params=None,timeout=15,retries=3):
+def api_get(url,params=None,timeout=25,retries=3):
     headers={"User-Agent":"Mozilla/5.0 (compatible; QuantPanel/3.2)"}
     for attempt in range(retries):
         try:
@@ -297,7 +297,7 @@ def api_get(url,params=None,timeout=15,retries=3):
 
 @st.cache_data(ttl=60)
 def kucoin_get_pool():
-    r=api_get(f"{KUCOIN_BASE}/market/allTickers",timeout=20)
+    r=api_get(f"{KUCOIN_BASE}/market/allTickers",timeout=30)
     if r is None: return None,"kucoin_fail"
     try:
         data=r.json(); tickers=data.get("data",{}).get("ticker",[])
@@ -744,13 +744,13 @@ with tab1:
     with c2:
         if st.session_state.scan_results: st.caption(f"✅ {st.session_state.scan_total} tokens")
 
-    # Auto-refresh con st.rerun
+    # Auto-refresh — solo muestra contador, no hace rerun automático en Render
     if refresh_sec > 0 and st.session_state.last_scan > 0:
         time_left = refresh_sec - int(time.time() - st.session_state.last_scan)
         if time_left > 0:
             st.caption(f"🔄 Próximo refresh en {time_left//60}m {time_left%60}s")
         else:
-            st.rerun()
+            st.caption("🔄 Listo para escanear — toca Escanear ahora")
     if st.session_state.scan_source:
         st.markdown(f'<div class="info-box">Fuente: <strong>{st.session_state.scan_source}</strong> · vol ≥ {fmt_vol(vol_min)} · PA · Smart Entry 4F</div>',unsafe_allow_html=True)
 
@@ -830,7 +830,6 @@ with tab1:
         if st.button(f"🔍 Analizar {r['token']}", key=f"btn_analisis_{r['token']}", use_container_width=True):
             st.session_state["analisis_sym"] = r["token"]
             st.session_state["analisis_trigger"] = True
-            st.rerun()
 
 with tab2:
     st.markdown("### Analisis Individual")

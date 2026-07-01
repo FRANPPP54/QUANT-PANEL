@@ -376,6 +376,115 @@ def get_ohlcv(coin,largo_plazo=False):
             if c and len(c)>=20: return c,v
     return None,None
 
+# ── CoinPaprika: fundamentals fallback (sin rate limit, funciona en Render) ──
+@st.cache_data(ttl=3600)
+def cp_get_coin_info(cp_id):
+    """Descarga info completa del token desde CoinPaprika /coins/{id}"""
+    if not cp_id: return None
+    r=api_get(f"{CP_BASE}/coins/{cp_id}",timeout=10,retries=2)
+    if r is None: return None
+    try: return r.json()
+    except Exception: return None
+
+@st.cache_data(ttl=1800)
+def cp_get_ticker(cp_id):
+    """Descarga precio, market cap, supply desde CoinPaprika /tickers/{id}"""
+    if not cp_id: return None
+    r=api_get(f"{CP_BASE}/tickers/{cp_id}",params={"quotes":"USD"},timeout=10,retries=2)
+    if r is None: return None
+    try: return r.json()
+    except Exception: return None
+
+def get_supply_cp(cp_id):
+    """Supply y ATH desde CoinPaprika — fallback cuando CoinGecko falla."""
+    coin_info=cp_get_coin_info(cp_id)
+    ticker=cp_get_ticker(cp_id)
+    if not coin_info and not ticker: return None
+    try:
+        def fmt(v):
+            if v is None: return "N/A"
+            if v>=1e12: return f"{v/1e12:.2f}T"
+            if v>=1e9: return f"{v/1e9:.2f}B"
+            if v>=1e6: return f"{v/1e6:.2f}M"
+            return f"{v:,.0f}"
+        q=ticker.get("quotes",{}).get("USD",{}) if ticker else {}
+        mc=q.get("market_cap") or 0
+        price=q.get("price") or 0
+        ath=q.get("ath_price")
+        pct=round((price-ath)/ath*100,1) if ath and price else None
+        # Supply desde coin_info
+        total_supply=coin_info.get("total_supply") if coin_info else None
+        circ_supply=coin_info.get("circulating_supply") if coin_info else None
+        # Categorías
+        tags=coin_info.get("tags",[]) if coin_info else []
+        cats=", ".join([t.get("name","") for t in tags[:2]]) if tags else "N/A"
+        return {
+            "max":  fmt(total_supply) if total_supply else "N/A",
+            "circ": fmt(circ_supply)  if circ_supply else "N/A",
+            "ath":  f"${ath:,.4f}"   if ath else "N/A",
+            "ath_date": "N/A",
+            "pct_ath": f"{pct}%"     if pct is not None else "N/A",
+            "cats": cats,
+            "source": "CoinPaprika",
+        }
+    except Exception: return None
+
+def get_fundamentals_cp(cp_id):
+    """Fundamentos desde CoinPaprika — fallback cuando CoinGecko falla."""
+    ticker=cp_get_ticker(cp_id)
+    coin_info=cp_get_coin_info(cp_id)
+    if not ticker: return None
+    try:
+        def fmt_usd(v):
+            if v is None: return "N/A"
+            if v>=1e9: return f"${v/1e9:.2f}B"
+            if v>=1e6: return f"${v/1e6:.2f}M"
+            if v>=1e3: return f"${v/1e3:.0f}K"
+            return f"${v:,.0f}"
+        q=ticker.get("quotes",{}).get("USD",{})
+        mc=q.get("market_cap"); vol=q.get("volume_24h")
+        rank=ticker.get("rank")
+        total=coin_info.get("total_supply") if coin_info else None
+        circ=coin_info.get("circulating_supply") if coin_info else None
+        supply_pct=round(circ/total*100,1) if circ and total and total>0 else None
+        tags=coin_info.get("tags",[]) if coin_info else []
+        cats=", ".join([t.get("name","") for t in tags[:2]]) if tags else "N/A"
+        return {
+            "mc": fmt_usd(mc),
+            "fdv": "N/A",
+            "fdv_mc": None,
+            "rank": rank,
+            "supply_pct": supply_pct,
+            "cats": cats,
+            "exchanges": [],
+            "mc_raw": mc or 0,
+        }
+    except Exception: return None
+
+def get_utility_cp(cp_id, coin_info=None):
+    """Utilidad básica desde CoinPaprika — fallback cuando CoinGecko falla."""
+    if not coin_info: coin_info=cp_get_coin_info(cp_id)
+    if not coin_info: return None
+    try:
+        desc=coin_info.get("description","") or ""
+        desc_clean=re.sub(r'<[^>]+>','',desc)[:500]
+        tags=coin_info.get("tags",[]) or []
+        cats=[t.get("name","") for t in tags[:3]]
+        utility_cats=["defi","infrastructure","layer","oracle","exchange","lending","yield","gaming","ai","nft","bridge","payment","privacy"]
+        score=3 if any(any(u in c.lower() for u in utility_cats) for c in cats) else 1
+        score=min(score,10)
+        return {
+            "desc": desc_clean,
+            "commits_4w": 0,
+            "stars": 0,
+            "forks": 0,
+            "twitter": "0",
+            "reddit": "0",
+            "cats": cats,
+            "utility_score": score,
+        }
+    except Exception: return None
+
 CG_MAP={"AAVE":"aave","UNI":"uniswap","LINK":"chainlink","MKR":"maker","BTC":"bitcoin","ETH":"ethereum","BNB":"binancecoin","SOL":"solana","ADA":"cardano","DOT":"polkadot","AVAX":"avalanche-2","MATIC":"matic-network","ATOM":"cosmos","NEAR":"near","FTM":"fantom","ALGO":"algorand","XLM":"stellar","XRP":"ripple","TRX":"tron","ARB":"arbitrum","OP":"optimism","APT":"aptos","SUI":"sui","INJ":"injective-protocol","TIA":"celestia","DOGE":"dogecoin","SHIB":"shiba-inu","PEPE":"pepe","LTC":"litecoin","BCH":"bitcoin-cash","HBAR":"hedera-hashgraph","SYN":"synapse-2","RUNE":"thorchain","HYPE":"hyperliquid","TAO":"bittensor","WIF":"dogwifcoin","BONK":"bonk","JUP":"jupiter-exchange-solana","FET":"fetch-ai","RENDER":"render-token","SEI":"sei-network","JTO":"jito-governance-token","PYTH":"pyth-network","WLD":"worldcoin-wld","GMX":"gmx","DYDX":"dydx"}
 
 @st.cache_data(ttl=3600)
@@ -814,7 +923,7 @@ with tab2:
             else:
                 st.write("Smart Entry corto plazo..."); se=smart_entry_cp(c,v,pa=pa)
             st.write("Señal ML..."); ml=senal_lorentziana(c)
-            st.write("Datos CoinGecko (supply + fundamentos)...")
+            st.write("Datos supply + fundamentos...")
             cg_id_val=get_cg_id(sym_input)
             cg_data=None; cg_name=""
             try:
@@ -823,11 +932,24 @@ with tab2:
                     cg_name=cg_data.get("name","") if cg_data else ""
             except Exception:
                 cg_data=None; cg_name=""
-            supply=get_supply(cg_data)
-            fundamentals=get_fundamentals(cg_data, sym_input)
-            utility=get_utility_data(cg_data)
-            if cg_id_val and not cg_data:
-                st.caption("⚠️ CoinGecko sin respuesta — supply/fundamentos omitidos. Intenta de nuevo.")
+
+            # Intentar con CoinGecko primero, fallback a CoinPaprika
+            if cg_data:
+                supply=get_supply(cg_data)
+                fundamentals=get_fundamentals(cg_data, sym_input)
+                utility=get_utility_data(cg_data)
+                data_source="CoinGecko"
+            else:
+                # Fallback: CoinPaprika (no tiene rate limit en Render)
+                st.write("CoinGecko no disponible — usando CoinPaprika...")
+                cp_id_val=coinpaprika_search_coin_id(sym_input)
+                cp_info=cp_get_coin_info(cp_id_val) if cp_id_val else None
+                supply=get_supply_cp(cp_id_val)
+                fundamentals=get_fundamentals_cp(cp_id_val)
+                utility=get_utility_cp(cp_id_val, coin_info=cp_info)
+                cg_name=cp_info.get("name","") if cp_info else sym_input
+                data_source="CoinPaprika"
+
             st.write("Noticias RSS..."); news=get_news(sym_input, name=cg_name)
             unlocks=get_unlocks(sym_input)
             ai_text=None; utility_ai=None
@@ -835,10 +957,10 @@ with tab2:
                 st.write("IA noticias..."); ai_text=get_ai(sym_input,news)
                 if utility:
                     st.write("IA utilidad..."); utility_ai=get_utility_ai(sym_input, utility.get("desc",""), utility.get("cats",[]), news)
-            status.update(label=f"✅ {sym_input} analizado",state="complete")
+            status.update(label=f"✅ {sym_input} analizado · {data_source}",state="complete")
 
         modo_txt="📅 Largo Plazo · 1D" if es_lp else "⚡ Corto Plazo · 1H"
-        st.markdown(f'<div class="card"><div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:22px;font-weight:700;color:#f1f5f9">{sym_input}</span><span class="t-yellow" style="font-size:20px">{fmt_p(c[-1])}</span></div><div class="t-sub">{modo_txt} · {fuente_analisis}</div></div>',unsafe_allow_html=True)
+        st.markdown(f'<div class="card"><div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:22px;font-weight:700;color:#f1f5f9">{sym_input}</span><span class="t-yellow" style="font-size:20px">{fmt_p(c[-1])}</span></div><div class="t-sub">{modo_txt} · {fuente_analisis} · Supply: {data_source}</div></div>',unsafe_allow_html=True)
         st.markdown(pa_card_html(pa),unsafe_allow_html=True)
         st.markdown(f'<a href="https://www.pionex.com/es/signUp?r=oCNuZqFw" target="_blank" style="display:block;text-align:center;background:#f59e0b;color:#000;border-radius:8px;padding:8px;font-size:13px;font-weight:700;margin-bottom:10px;text-decoration:none;">📈 Tradear {sym_input} en Pionex</a>',unsafe_allow_html=True)
         fases_total=3 if es_lp else 4

@@ -406,13 +406,23 @@ def get_cg_id(sym):
     except Exception: pass
     return None
 
-@st.cache_data(ttl=3600)
-def get_supply(cg_id):
+# ── CoinGecko: 1 sola llamada consolidada por token (evita 429 del plan publico) ──
+@st.cache_data(ttl=900)
+def get_cg_full(cg_id):
+    """Trae TODO lo de CoinGecko en una sola llamada: market_data, tickers, community, developer, description."""
     if not cg_id: return None
+    r=api_get(f"{CG_BASE}/coins/{cg_id}",
+        params={"localization":"false","tickers":"true","market_data":"true",
+                "community_data":"true","developer_data":"true"},timeout=20,retries=4)
+    if r is None: return None
+    try: return r.json()
+    except Exception: return None
+
+def get_supply(d):
+    """Ahora recibe el JSON ya descargado por get_cg_full (no hace fetch propio)."""
+    if not d: return None
     try:
-        r=api_get(f"{CG_BASE}/coins/{cg_id}",params={"localization":"false","tickers":"false","market_data":"true","community_data":"false","developer_data":"false"})
-        if r is None: return None
-        d=r.json(); md=d.get("market_data",{})
+        md=d.get("market_data",{})
         def fmt(v):
             if v is None: return "N/A"
             if v>=1e12: return f"{v/1e12:.2f}T"
@@ -429,16 +439,11 @@ def get_supply(cg_id):
         return {"max":fmt(maxi) if maxi else("∞" if not total else fmt(total)),"circ":fmt(circ),"ath":f"${ath:,.4f}" if ath else "N/A","ath_date":pdate(md.get("ath_date",{}).get("usd")),"pct_ath":f"{pct}%" if pct is not None else "N/A","cats":", ".join(d.get("categories",[])[:2]) or "N/A"}
     except Exception: return None
 
-@st.cache_data(ttl=600)
-def get_fundamentals(cg_id, sym):
-    """Obtiene fundamentos: market cap, FDV, exchanges, sector."""
-    if not cg_id: return None
+def get_fundamentals(d, sym):
+    """Recibe el JSON ya descargado por get_cg_full (no hace fetch propio)."""
+    if not d: return None
     try:
-        r = api_get(f"{CG_BASE}/coins/{cg_id}",
-            params={"localization":"false","tickers":"true","market_data":"true",
-                    "community_data":"false","developer_data":"false"})
-        if r is None: return None
-        d = r.json(); md = d.get("market_data", {})
+        md = d.get("market_data", {})
         def fmt_usd(v):
             if v is None: return "N/A"
             if v >= 1e9: return f"${v/1e9:.2f}B"
@@ -452,11 +457,8 @@ def get_fundamentals(cg_id, sym):
         maxi = md.get("max_supply")
         rank = d.get("market_cap_rank")
         cats = d.get("categories", [])
-        # FDV/MC ratio — cuanto mayor, mas dilución futura
         fdv_mc = round(fdv/mc, 1) if fdv and mc and mc>0 else None
-        # Supply % circulante
         supply_pct = round(circ/total*100, 1) if circ and total and total>0 else None
-        # Top exchanges
         tickers = d.get("tickers", [])[:5]
         exchanges = list(dict.fromkeys([t.get("market", {}).get("name","") for t in tickers if t.get("market",{}).get("name")]))[:3]
         return {
@@ -471,43 +473,28 @@ def get_fundamentals(cg_id, sym):
         }
     except Exception: return None
 
-@st.cache_data(ttl=3600)
-def get_utility_data(cg_id):
-    """Obtiene datos de utilidad: descripcion, dev activity, categorias."""
-    if not cg_id: return None
+def get_utility_data(d):
+    """Recibe el JSON ya descargado por get_cg_full (no hace fetch propio)."""
+    if not d: return None
     try:
-        r = api_get(f"{CG_BASE}/coins/{cg_id}",
-            params={"localization":"false","tickers":"false","market_data":"true",
-                    "community_data":"true","developer_data":"true"})
-        if r is None: return None
-        d = r.json()
-        # Descripcion del proyecto
         desc = d.get("description", {}).get("en", "") or ""
-        desc_clean = re.sub(r'<[^>]+>', '', desc)[:500]  # quitar HTML, max 500 chars
-        # Developer activity
+        desc_clean = re.sub(r'<[^>]+>', '', desc)[:500]
         dev = d.get("developer_data", {})
         commits_4w = dev.get("commit_count_4_weeks") or 0
         stars = dev.get("stars") or 0
         forks = dev.get("forks") or 0
-        # Community
         comm = d.get("community_data", {})
         twitter = comm.get("twitter_followers") or 0
         reddit = comm.get("reddit_subscribers") or 0
-        # Categorias para determinar sector
         cats = d.get("categories", [])
-        # Score de utilidad 0-10
         score = 0
-        # Sector con utilidad real
         utility_cats = ["defi","infrastructure","layer","oracle","exchange","lending","yield","gaming","ai","nft","bridge","payment","privacy"]
         if any(any(u in c.lower() for u in utility_cats) for c in cats): score += 3
-        # Dev activity
         if commits_4w > 50: score += 3
         elif commits_4w > 20: score += 2
         elif commits_4w > 5: score += 1
-        # Community
         if twitter > 500_000: score += 2
         elif twitter > 100_000: score += 1
-        # GitHub stars
         if stars > 1000: score += 2
         elif stars > 200: score += 1
         score = min(score, 10)
@@ -573,11 +560,11 @@ def get_unlocks(sym):
     except Exception: return []
 
 @st.cache_data(ttl=1800)
-def get_news(sym):
+def get_news(sym, name=""):
     feeds=[("CoinDesk","https://www.coindesk.com/arc/outboundfeeds/rss/"),("CoinTelegraph","https://cointelegraph.com/rss"),("Decrypt","https://decrypt.co/feed"),("TheBlock","https://www.theblock.co/rss.xml")]
     pos_words=["surge","rally","pump","gain","rise","bull","high","record","launch","approved"]
     neg_words=["crash","drop","fall","plunge","bear","hack","exploit","scam","delist","decline"]
-    s=sym.lower(); found=[]
+    s=sym.lower(); n=name.lower().strip(); found=[]
     for src,url in feeds:
         try:
             r=SESSION.get(url,timeout=8,headers={"User-Agent":"Mozilla/5.0"})
@@ -586,16 +573,19 @@ def get_news(sym):
             items=root.findall(".//item") or root.findall(".//{http://www.w3.org/2005/Atom}entry")
             for item in items:
                 t=(item.findtext("title") or "").strip(); desc=(item.findtext("description") or "").strip()
-                if not re.search(r'\b'+re.escape(s)+r'\b',(t+" "+desc).lower()): continue
+                blob=(t+" "+desc).lower()
+                match_sym=re.search(r'\b'+re.escape(s)+r'\b',blob)
+                match_name=bool(n) and len(n)>=3 and re.search(r'\b'+re.escape(n)+r'\b',blob)
+                if not match_sym and not match_name: continue
                 tl=t.lower()
                 pos=sum(1 for k in pos_words if k in tl); neg=sum(1 for k in neg_words if k in tl)
                 sent="🟢" if pos>neg else("🔴" if neg>pos else "⚪")
                 found.append({"title":t[:85],"src":src,"sent":sent})
         except Exception: continue
     seen,uniq=set(),[]
-    for n in found:
-        k=n["title"][:30].lower()
-        if k not in seen: seen.add(k); uniq.append(n)
+    for n2 in found:
+        k=n2["title"][:30].lower()
+        if k not in seen: seen.add(k); uniq.append(n2)
     return uniq[:5]
 
 def get_ai(sym,news):
@@ -875,13 +865,26 @@ with tab2:
             else:
                 st.write("Smart Entry corto plazo..."); se=smart_entry_cp(c,v,pa=pa)
             st.write("Señal ML..."); ml=senal_lorentziana(c)
-            st.write("Supply ATH..."); cg_id_val=get_cg_id(sym_input); supply=get_supply(cg_id_val) if cg_id_val else None
-            st.write("Noticias..."); news=get_news(sym_input)
-            fundamentals=None; utility=None; unlocks=[]; ai_text=None; utility_ai=None
-            st.write("Fundamentos..."); fundamentals=get_fundamentals(cg_id_val, sym_input) if cg_id_val else None
+
+            # ── CoinGecko: 1 sola llamada consolidada (supply + fundamentos + utilidad) ──
+            st.write("Datos CoinGecko...")
+            cg_id_val=get_cg_id(sym_input)
+            cg_data=get_cg_full(cg_id_val) if cg_id_val else None
+            cg_name = cg_data.get("name","") if cg_data else ""
+            supply=get_supply(cg_data)
+            fundamentals=get_fundamentals(cg_data, sym_input)
+            utility=get_utility_data(cg_data)
+            if cg_id_val and not cg_data:
+                st.write("⚠️ CoinGecko sin respuesta (posible limite de tasa) — se omiten supply/fundamentos/utilidad")
+
+            st.write("Noticias..."); news=get_news(sym_input, name=cg_name)
+            unlocks=[]; ai_text=None; utility_ai=None
             st.write("Unlocks..."); unlocks=get_unlocks(sym_input)
             if ANTHROPIC_KEY:
                 st.write("IA noticias..."); ai_text=get_ai(sym_input,news)
+                if utility:
+                    st.write("IA utilidad...")
+                    utility_ai=get_utility_ai(sym_input, utility.get("desc",""), utility.get("cats",[]), news)
             status.update(label=f"✅ {sym_input} analizado",state="complete")
 
         modo_txt="📅 Largo Plazo · 1D" if es_lp else "⚡ Corto Plazo · 1H"
@@ -965,6 +968,8 @@ with tab2:
                 ai_util_html += '<div style="color:'+col+';font-size:12px;margin-bottom:6px">'+line+'</div>'
             ai_util_html += '</div>'
             st.markdown(ai_util_html, unsafe_allow_html=True)
+        elif ANTHROPIC_KEY and not utility:
+            st.caption("ℹ️ Utilidad IA no disponible: sin datos de CoinGecko para este token.")
 
         if unlocks:
             rows="".join(f'<div style="color:{"#ef4444" if u["urgent"] else "#f1f5f9"};font-size:12px;margin-bottom:4px">{"⚠️" if u["urgent"] else "📅"} {u["date"]} ({u["days"]}d) {u["cat"]}</div>' for u in unlocks)
@@ -972,6 +977,8 @@ with tab2:
         if news:
             rows="".join(f'<div style="font-size:12px;color:#f1f5f9;margin-bottom:5px">{n["sent"]} <span class="t-sub">[{n["src"]}]</span> {n["title"]}</div>' for n in news)
             st.markdown(f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">📰 NOTICIAS</div>{rows}</div>',unsafe_allow_html=True)
+        else:
+            st.markdown(f'<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:4px">📰 NOTICIAS</div><div class="t-sub">Sin titulares recientes que mencionen {sym_input}{" / " + cg_name if cg_name else ""} en los feeds monitoreados.</div></div>',unsafe_allow_html=True)
         if ai_text:
             rows=""
             for line in ai_text.splitlines():

@@ -875,18 +875,21 @@ with tab2:
                 st.write("Smart Entry corto plazo..."); se=smart_entry_cp(c,v,pa=pa)
             st.write("Señal ML..."); ml=senal_lorentziana(c)
             st.write("Supply ATH..."); cg_id_val=get_cg_id(sym_input); supply=get_supply(cg_id_val) if cg_id_val else None
-            st.write("Fundamentos..."); fundamentals=get_fundamentals(cg_id_val, sym_input) if cg_id_val else None
-            st.write("Utilidad y adopcion..."); utility=get_utility_data(cg_id_val) if cg_id_val else None
-            st.write("Unlocks..."); unlocks=get_unlocks(sym_input)
             st.write("Noticias..."); news=get_news(sym_input)
-            ai_text=None
-            utility_ai=None
-            if ANTHROPIC_KEY:
-                st.write("Analisis IA utilidad...")
-                desc=utility.get("desc","") if utility else ""
-                cats=utility.get("cats",[]) if utility else []
-                utility_ai=get_utility_ai(sym_input,desc,cats,news)
-                st.write("Resumen IA noticias..."); ai_text=get_ai(sym_input,news)
+            # Fundamentos y utilidad solo si se pidieron
+            fundamentals=None; utility=None; unlocks=[]; ai_text=None; utility_ai=None
+            if cargar_extra:
+                st.write("Fundamentos..."); fundamentals=get_fundamentals(cg_id_val, sym_input) if cg_id_val else None
+                st.write("Utilidad..."); utility=get_utility_data(cg_id_val) if cg_id_val else None
+                st.write("Unlocks..."); unlocks=get_unlocks(sym_input)
+                if ANTHROPIC_KEY:
+                    st.write("IA utilidad...")
+                    desc=utility.get("desc","") if utility else ""
+                    cats=utility.get("cats",[]) if utility else []
+                    utility_ai=get_utility_ai(sym_input,desc,cats,news)
+                    st.write("IA noticias..."); ai_text=get_ai(sym_input,news)
+            else:
+                unlocks=[]
             status.update(label=f"✅ {sym_input} analizado",state="complete")
 
         modo_txt="📅 Largo Plazo · 1D" if es_lp else "⚡ Corto Plazo · 1H"

@@ -271,19 +271,18 @@ def senal_lorentziana(closes,lookahead=4,k=8):
 
 # ── APIs ──────────────────────────────────────────────────────────────
 def api_get(url,params=None,timeout=25,retries=3):
-    headers={"User-Agent":"Mozilla/5.0 (compatible; QuantPanel/3.3)"}
+    headers={"User-Agent":"Mozilla/5.0 (compatible; QuantPanel/3.4)"}
     for attempt in range(retries):
         try:
             r=SESSION.get(url,params=params,headers=headers,timeout=timeout)
             if r.status_code==429:
-                # FIX v3.3: espera más larga en rate limit
-                wait=15*(attempt+1)
+                wait=8*(attempt+1)  # reducido de 15 a 8 segundos
                 time.sleep(wait)
                 continue
             if r.status_code in (400,404): return None
             r.raise_for_status(); return r
-        except requests.exceptions.Timeout: time.sleep(2*(attempt+1))
-        except Exception: time.sleep(1)
+        except requests.exceptions.Timeout: time.sleep(1*(attempt+1))
+        except Exception: time.sleep(0.5)
     return None
 
 @st.cache_data(ttl=60)
@@ -396,16 +395,14 @@ def get_cg_id(sym):
     except Exception: pass
     return None
 
-# FIX v3.3: CoinGecko con cache más largo (3600s) y mayor tolerancia al rate limit
+# FIX v3.4: sin sleep, timeout 8s, 1 reintento — no congela la UI
 @st.cache_data(ttl=3600)
 def get_cg_full(cg_id):
     if not cg_id: return None
-    # Pequeña espera inicial para reducir probabilidad de 429
-    time.sleep(2.0)
     r=api_get(f"{CG_BASE}/coins/{cg_id}",
         params={"localization":"false","tickers":"true","market_data":"true",
                 "community_data":"true","developer_data":"true"},
-        timeout=30, retries=5)
+        timeout=8, retries=1)
     if r is None: return None
     try: return r.json()
     except Exception: return None
@@ -819,13 +816,18 @@ with tab2:
             st.write("Señal ML..."); ml=senal_lorentziana(c)
             st.write("Datos CoinGecko (supply + fundamentos)...")
             cg_id_val=get_cg_id(sym_input)
-            cg_data=get_cg_full(cg_id_val) if cg_id_val else None
-            cg_name = cg_data.get("name","") if cg_data else ""
+            cg_data=None; cg_name=""
+            try:
+                if cg_id_val:
+                    cg_data=get_cg_full(cg_id_val)
+                    cg_name=cg_data.get("name","") if cg_data else ""
+            except Exception:
+                cg_data=None; cg_name=""
             supply=get_supply(cg_data)
             fundamentals=get_fundamentals(cg_data, sym_input)
             utility=get_utility_data(cg_data)
             if cg_id_val and not cg_data:
-                st.warning("⚠️ CoinGecko sin respuesta (rate limit) — supply/fundamentos omitidos. Intenta de nuevo en 1 min.")
+                st.caption("⚠️ CoinGecko sin respuesta — supply/fundamentos omitidos. Intenta de nuevo.")
             st.write("Noticias RSS..."); news=get_news(sym_input, name=cg_name)
             unlocks=get_unlocks(sym_input)
             ai_text=None; utility_ai=None

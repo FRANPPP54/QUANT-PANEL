@@ -781,7 +781,7 @@ def get_potencial_ai(tokens_data):
 # ══════════════════════════════════════════════════════════════════
 st.markdown("# ⚡ Quant Panel")
 st.markdown('<p class="t-sub">Screener · Pionex · v3.4 — KuCoin + CoinPaprika</p>',unsafe_allow_html=True)
-tab1,tab2,tab3,tab4=st.tabs(["📡 Scanner","📊 Analisis","🌟 Potencial","⚙️ Ajustes"])
+tab1,tab2,tab3,tab4,tab5=st.tabs(["📡 Scanner","📊 Analisis","🌟 Potencial","⚙️ Ajustes","❓ Ayuda"])
 
 with tab1:
     st.markdown("### Mejores tokens para Grid Bot")
@@ -1133,10 +1133,196 @@ with tab4:
     st.code('# Render → Environment Variables:\nANTHROPIC_KEY = "sk-ant-..."')
     st.info("En Render la key va en Environment, no en Secrets.")
     st.divider()
-    st.markdown(f"""**Quant Panel v3.3 — Fixes**
-- ✅ CoinGecko: mayor tolerancia al rate limit (espera 2s + reintentos x5)
-- ✅ Noticias: 7 fuentes RSS (antes 4) + búsqueda por nombre completo + hasta 8 resultados
-- ✅ Fundamentos: mensaje claro cuando CoinGecko falla por rate limit
-- 🟢 **KuCoin** primario · 🔵 **CoinPaprika** fallback · ⚪ **CoinGecko** supply/ATH
+    st.markdown("""**Fuentes de datos v3.4**
+- 🟢 **KuCoin** — velas y precios (primario)
+- 🔵 **CoinPaprika** — fallback velas + supply/fundamentos
+- ⚪ **CoinGecko** — supply/ATH cuando está disponible
+- 📰 **8 feeds RSS** — noticias en paralelo
+- 🤖 **Claude API** — análisis IA (requiere key)
     """)
     st.caption("⚠️ Informacion de mercado. No es recomendacion de inversion.")
+
+with tab5:
+    subtab1, subtab2 = st.tabs(["❓ FAQ", "☕ Apoyar"])
+
+    # ── FAQ ────────────────────────────────────────────────────────
+    with subtab1:
+        st.markdown("### ❓ Preguntas Frecuentes")
+
+        with st.expander("📊 ¿Qué es el Score y cómo se calcula?"):
+            st.markdown("""
+El **Score** es un número que indica qué tan adecuado es un token para cada tipo de bot.
+
+Se calcula combinando:
+- **Choppiness** — qué tan lateral se mueve el precio (ideal para Grid)
+- **Volatilidad horaria** — amplitud de los movimientos
+- **Liquidez** — volumen en dólares (más volumen = más seguro)
+- **Cambio 24h** — favorece subidas para Long, bajadas para Short
+- **Penalización** — si el token cae más del 15% se penaliza para Grid Long
+
+**Rango típico:** 10–120. Más alto = mejor candidato para ese bot.
+            """)
+
+        with st.expander("🔢 ¿Qué es el Choppiness Index?"):
+            st.markdown("""
+El **Choppiness Index** mide si el precio se mueve en tendencia o lateralmente.
+
+- **Alto (>5)** → mercado lateral = ideal para Grid Bot
+- **Bajo (<2)** → mercado en tendencia fuerte = mejor para DCA o Infinity
+
+El Grid Bot gana dinero cuando el precio sube y baja dentro de un rango. Un Choppiness alto indica que eso está pasando.
+            """)
+
+        with st.expander("🚦 ¿Qué significa el Semáforo Smart Entry?"):
+            st.markdown("""
+El **Smart Entry** evalúa 4 condiciones antes de entrar en una posición:
+
+| Fase | Condición | Qué significa |
+|------|-----------|---------------|
+| F1 | Precio > EMA50 | Tendencia alcista de corto plazo |
+| F2 | RSI(10) entre 45–65 | Momentum sin sobrecompra/sobreventa |
+| F3 | Volumen > media×1.5 | Hay dinero real entrando (whale inflow) |
+| F4 | Price Action alcista | La estructura de velas confirma |
+
+- 🟢 **4/4** → entrada válida con SL y TP calculados
+- 🟡 **3/4** → casi listo, monitorear
+- 🔴 **≤2/4** → esperar mejor momento
+            """)
+
+        with st.expander("📐 ¿Qué es el Price Action?"):
+            st.markdown("""
+**Price Action** analiza la **forma** del gráfico, no solo los números.
+
+- **Estructura HH/HL** (Higher Highs / Higher Lows) → tendencia alcista
+- **Estructura LH/LL** (Lower Highs / Lower Lows) → tendencia bajista
+- **Calidad del movimiento** → ¿las velas alcistas son más grandes que las bajistas?
+- **Soporte y Resistencia** → niveles donde el precio rebotó antes
+
+La calidad va de 0 a 1. Un valor ≥ 0.55 indica un movimiento sólido.
+            """)
+
+        with st.expander("🤖 ¿Qué es la Señal ML Lorentziana?"):
+            st.markdown("""
+Es una señal de **Machine Learning** basada en el algoritmo k-NN (k vecinos más cercanos) con distancia Lorentziana.
+
+Funciona así:
+1. Toma las últimas ~150 velas como historial
+2. Calcula RSI y EMA de cada vela
+3. Busca los 8 momentos históricos más similares al actual
+4. Si en esos momentos el precio subió → COMPRA, si bajó → VENTA
+
+⚠️ Es una **aproximación simplificada** — no es el indicador original de TradingView. Úsala como una señal adicional, no como la única.
+            """)
+
+        with st.expander("💥 ¿Qué es el detector Pump/Dump?"):
+            st.markdown("""
+Detecta movimientos inusuales de precio comparando:
+
+- **Movimiento 1h y 4h** — qué tan fuerte fue el cambio reciente
+- **Ratio de volumen** — si el volumen actual es 2× el promedio
+
+**Fases del PUMP:**
+- 🚀 EN CURSO → está subiendo ahora con volumen
+- 📊 CONSOLIDANDO → subió fuerte, ahora descansa
+- ⚠️ AGOTADO → ya subió mucho, volumen bajando
+
+**Fases del DUMP:**
+- 💥 EN CURSO → está cayendo con volumen
+- 🛑 FRENANDO → la caída se desacelera
+- 🟢 POSIBLE SUELO → caída grande, volumen bajo = posible rebote
+            """)
+
+        with st.expander("📊 ¿Qué bot usar según el mercado?"):
+            st.markdown("""
+| Situación | Bot recomendado |
+|-----------|----------------|
+| Precio lateral, sin tendencia clara | **Grid Long/Short** |
+| Tendencia alcista fuerte | **Infinity Long** |
+| Tendencia bajista fuerte | **Infinity Short** |
+| Precio cayó mucho (dip) | **DCA Long** |
+| Precio subió mucho (pump reciente) | **DCA Short** |
+
+**Regla general:** Grid Bot = lateral · Infinity = tendencia · DCA = correcciones
+            """)
+
+        with st.expander("⚠️ Aviso legal"):
+            st.markdown("""
+Quant Panel es una herramienta de **análisis técnico automatizado**.
+
+- No es asesoramiento financiero
+- Los resultados pasados no garantizan rendimientos futuros
+- El trading de criptomonedas conlleva riesgo de pérdida total del capital
+- Siempre usá gestión de riesgo y stop loss
+
+**Usá esta herramienta como apoyo a tu propio análisis, no como señal automática de entrada.**
+            """)
+
+    # ── DONACIONES ─────────────────────────────────────────────────
+    with subtab2:
+        st.markdown("### ☕ Apoyar el proyecto")
+        st.markdown("""
+Quant Panel es **100% gratuito** y sin publicidad.
+
+Si te resulta útil y querés apoyar el desarrollo, podés hacerlo de estas formas:
+        """)
+
+        # Buy Me a Coffee
+        st.markdown("""
+#### ☕ Buy Me a Coffee
+La forma más simple — acepta tarjeta de crédito y algunas cryptos.
+        """)
+        st.markdown(
+            '<a href="https://buymeacoffee.com" target="_blank" '
+            'style="display:block;text-align:center;background:#FFDD00;color:#000;'
+            'border-radius:10px;padding:12px;font-size:14px;font-weight:700;'
+            'text-decoration:none;margin-bottom:12px;">☕ Invitame un café</a>',
+            unsafe_allow_html=True
+        )
+        st.caption("👆 Reemplazá el link con tu perfil real de Buy Me a Coffee")
+
+        st.divider()
+
+        # Crypto directo
+        st.markdown("#### 🪙 Donación directa en Crypto")
+        st.markdown("Sin intermediarios, sin comisiones de plataforma.")
+
+        st.markdown("""
+<div class="card">
+<div style="color:#f59e0b;font-size:13px;font-weight:700;margin-bottom:8px">₿ Bitcoin (BTC)</div>
+<div style="font-family:monospace;font-size:11px;color:#f1f5f9;word-break:break-all">TU_DIRECCIÓN_BTC_AQUÍ</div>
+</div>
+<div class="card">
+<div style="color:#10b981;font-size:13px;font-weight:700;margin-bottom:8px">Ξ Ethereum / USDT (ERC-20)</div>
+<div style="font-family:monospace;font-size:11px;color:#f1f5f9;word-break:break-all">TU_DIRECCIÓN_ETH_AQUÍ</div>
+</div>
+<div class="card">
+<div style="color:#3b82f6;font-size:13px;font-weight:700;margin-bottom:8px">💵 USDT (TRC-20 · Tron)</div>
+<div style="font-family:monospace;font-size:11px;color:#f1f5f9;word-break:break-all">TU_DIRECCIÓN_TRC20_AQUÍ</div>
+</div>
+        """, unsafe_allow_html=True)
+
+        st.divider()
+
+        # Pionex
+        st.markdown("#### 📈 Registrate en Pionex con mi link")
+        st.markdown("Sin costo para vos — yo recibo una pequeña comisión cuando operás.")
+        st.markdown(
+            '<a href="https://www.pionex.com/es/signUp?r=oCNuZqFw" target="_blank" '
+            'style="display:block;text-align:center;background:#f59e0b;color:#000;'
+            'border-radius:10px;padding:12px;font-size:14px;font-weight:700;'
+            'text-decoration:none;">📈 Abrir cuenta en Pionex</a>',
+            unsafe_allow_html=True
+        )
+
+        st.divider()
+        st.markdown("""
+#### 🙏 ¿Cómo obtengo mis direcciones crypto?
+
+Si no tenés billetera aún:
+- **Binance / KuCoin** → Cartera → Depositar → elegí la moneda → copiá la dirección
+- **Trust Wallet** → Recibir → elegí la moneda → copiá la dirección
+
+Luego reemplazá los textos `TU_DIRECCIÓN_XXX_AQUÍ` en el código con tus direcciones reales.
+        """)
+        st.caption("⚠️ Verificá siempre la dirección antes de enviar. Las transacciones crypto son irreversibles.")
+

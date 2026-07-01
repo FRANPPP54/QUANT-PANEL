@@ -851,6 +851,7 @@ with tab2:
         do_analyze = True
 
     if do_analyze and sym_input:
+        cargar_extra = True
         with st.status(f"Analizando {sym_input}...",expanded=True) as status:
             kucoin_symbol=sym_input+"-USDT"
             if es_lp:
@@ -876,20 +877,11 @@ with tab2:
             st.write("Señal ML..."); ml=senal_lorentziana(c)
             st.write("Supply ATH..."); cg_id_val=get_cg_id(sym_input); supply=get_supply(cg_id_val) if cg_id_val else None
             st.write("Noticias..."); news=get_news(sym_input)
-            # Fundamentos y utilidad solo si se pidieron
             fundamentals=None; utility=None; unlocks=[]; ai_text=None; utility_ai=None
-            if cargar_extra:
-                st.write("Fundamentos..."); fundamentals=get_fundamentals(cg_id_val, sym_input) if cg_id_val else None
-                st.write("Utilidad..."); utility=get_utility_data(cg_id_val) if cg_id_val else None
-                st.write("Unlocks..."); unlocks=get_unlocks(sym_input)
-                if ANTHROPIC_KEY:
-                    st.write("IA utilidad...")
-                    desc=utility.get("desc","") if utility else ""
-                    cats=utility.get("cats",[]) if utility else []
-                    utility_ai=get_utility_ai(sym_input,desc,cats,news)
-                    st.write("IA noticias..."); ai_text=get_ai(sym_input,news)
-            else:
-                unlocks=[]
+            st.write("Fundamentos..."); fundamentals=get_fundamentals(cg_id_val, sym_input) if cg_id_val else None
+            st.write("Unlocks..."); unlocks=get_unlocks(sym_input)
+            if ANTHROPIC_KEY:
+                st.write("IA noticias..."); ai_text=get_ai(sym_input,news)
             status.update(label=f"✅ {sym_input} analizado",state="complete")
 
         modo_txt="📅 Largo Plazo · 1D" if es_lp else "⚡ Corto Plazo · 1H"

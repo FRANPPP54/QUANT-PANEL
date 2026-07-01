@@ -1,5 +1,5 @@
 """
-Quant Panel Web v3.3 — Render / Streamlit Cloud
+Quant Panel Web v3.4 — Render / Streamlit Cloud
 KuCoin (primario) → CoinPaprika (fallback) → CoinGecko (supply/ATH)
 Fix v3.3: mejor manejo de rate limit CoinGecko + más fuentes de noticias
 """
@@ -519,9 +519,10 @@ def get_unlocks(sym):
         result.sort(key=lambda x:x["days"]); return result[:5]
     except Exception: return []
 
-# FIX v3.3: más fuentes RSS + búsqueda por nombre completo del token
+# FIX v3.4: feeds RSS en paralelo con threading → más noticias, más rápido
 @st.cache_data(ttl=1800)
 def get_news(sym, name=""):
+    import threading
     feeds=[
         ("CoinDesk","https://www.coindesk.com/arc/outboundfeeds/rss/"),
         ("CoinTelegraph","https://cointelegraph.com/rss"),
@@ -530,25 +531,26 @@ def get_news(sym, name=""):
         ("BeInCrypto","https://beincrypto.com/feed/"),
         ("CryptoSlate","https://cryptoslate.com/feed/"),
         ("AMBCrypto","https://ambcrypto.com/feed/"),
+        ("NewsBTC","https://www.newsbtc.com/feed/"),
     ]
-    pos_words=["surge","rally","pump","gain","rise","bull","high","record","launch","approved","listing","upgrade","partnership","growth"]
-    neg_words=["crash","drop","fall","plunge","bear","hack","exploit","scam","delist","decline","warning","ban","lawsuit","sec"]
+    pos_words=["surge","rally","pump","gain","rise","bull","high","record","launch","approved","listing","upgrade","partnership","growth","soars","jumps","eyes","stake","acquire"]
+    neg_words=["crash","drop","fall","plunge","bear","hack","exploit","scam","delist","decline","warning","ban","lawsuit","sec","slump","loses"]
     s=sym.lower()
-    # Variantes de búsqueda: símbolo + nombre completo + primeras palabras del nombre
     name_lower=name.lower().strip()
     name_words=[w for w in name_lower.split() if len(w)>=4]
     found=[]
-    for src,url in feeds:
+    lock=threading.Lock()
+
+    def fetch_feed(src, url):
         try:
-            r=SESSION.get(url,timeout=10,headers={"User-Agent":"Mozilla/5.0"})
-            if r.status_code!=200: continue
+            r=SESSION.get(url,timeout=6,headers={"User-Agent":"Mozilla/5.0"})
+            if r.status_code!=200: return
             root=ET.fromstring(r.content)
             items=root.findall(".//item") or root.findall(".//{http://www.w3.org/2005/Atom}entry")
             for item in items:
                 t=(item.findtext("title") or "").strip()
                 desc=(item.findtext("description") or "").strip()
                 blob=(t+" "+desc).lower()
-                # Buscar por símbolo O por nombre O por palabras del nombre
                 match=(re.search(r'\b'+re.escape(s)+r'\b',blob) or
                        (len(name_lower)>=4 and re.search(r'\b'+re.escape(name_lower)+r'\b',blob)) or
                        any(re.search(r'\b'+re.escape(w)+r'\b',blob) for w in name_words))
@@ -557,13 +559,19 @@ def get_news(sym, name=""):
                 pos=sum(1 for k in pos_words if k in tl)
                 neg=sum(1 for k in neg_words if k in tl)
                 sent="🟢" if pos>neg else("🔴" if neg>pos else "⚪")
-                found.append({"title":t[:85],"src":src,"sent":sent})
-        except Exception: continue
+                with lock:
+                    found.append({"title":t[:90],"src":src,"sent":sent})
+        except Exception: pass
+
+    threads=[threading.Thread(target=fetch_feed,args=(src,url)) for src,url in feeds]
+    for t in threads: t.daemon=True; t.start()
+    for t in threads: t.join(timeout=8)
+
     seen,uniq=set(),[]
     for n2 in found:
         k=n2["title"][:30].lower()
         if k not in seen: seen.add(k); uniq.append(n2)
-    return uniq[:8]  # FIX: subimos de 5 a 8
+    return uniq[:10]
 
 def get_ai(sym,news):
     if not ANTHROPIC_KEY: return None
@@ -666,7 +674,7 @@ def get_potencial_ai(tokens_data):
 # UI
 # ══════════════════════════════════════════════════════════════════
 st.markdown("# ⚡ Quant Panel")
-st.markdown('<p class="t-sub">Screener · Pionex · v3.3 — KuCoin + CoinPaprika</p>',unsafe_allow_html=True)
+st.markdown('<p class="t-sub">Screener · Pionex · v3.4 — KuCoin + CoinPaprika</p>',unsafe_allow_html=True)
 tab1,tab2,tab3,tab4=st.tabs(["📡 Scanner","📊 Analisis","🌟 Potencial","⚙️ Ajustes"])
 
 with tab1:
@@ -849,13 +857,43 @@ with tab2:
             score = utility["utility_score"]
             score_col = "#10b981" if score>=7 else ("#f59e0b" if score>=4 else "#ef4444")
             score_label = "Alta" if score>=7 else ("Media" if score>=4 else "Baja")
-            dev_col = "#10b981" if utility["commits_4w"]>20 else ("#f59e0b" if utility["commits_4w"]>5 else "#ef4444")
             cats_txt = " · ".join(utility["cats"]) if utility["cats"] else "N/A"
+
+            # Dev Activity — solo mostrar si tiene datos reales
+            commits = utility["commits_4w"]
+            stars   = utility["stars"]
+            twitter_raw = utility["twitter"]
+            reddit_raw  = utility["reddit"]
+
+            if commits > 0:
+                dev_col = "#10b981" if commits>20 else ("#f59e0b" if commits>5 else "#ef4444")
+                dev_html = ('<div><div class="t-sub">Dev Activity</div>'
+                           '<div style="color:'+dev_col+'">'+str(commits)+' commits/4w</div>'
+                           '<div class="t-sub">⭐ '+str(stars)+' stars</div></div>')
+            elif stars > 0:
+                dev_html = ('<div><div class="t-sub">GitHub Stars</div>'
+                           '<div style="color:#f59e0b">⭐ '+str(stars)+'</div>'
+                           '<div class="t-sub">datos dev no disp.</div></div>')
+            else:
+                dev_html = ('<div><div class="t-sub">Dev Activity</div>'
+                           '<div class="t-sub" style="font-size:11px">No disponible<br>vía API gratuita</div></div>')
+
+            # Comunidad — solo mostrar si tiene datos reales
+            tw_val = twitter_raw if twitter_raw not in ("0","") else None
+            rd_val = reddit_raw  if reddit_raw  not in ("0","") else None
+            if tw_val or rd_val:
+                comm_html = ('<div><div class="t-sub">Comunidad</div>'
+                            +(f'<div style="color:#f1f5f9">🐦 {tw_val}</div>' if tw_val else '')
+                            +(f'<div class="t-sub">Reddit: {rd_val}</div>' if rd_val else '')
+                            +'</div>')
+            else:
+                comm_html = ('<div><div class="t-sub">Comunidad</div>'
+                            '<div class="t-sub" style="font-size:11px">Sin datos<br>API gratuita</div></div>')
+
             util_html = ('<div class="card"><div style="color:#64748b;font-size:12px;font-weight:600;margin-bottom:8px">🔬 UTILIDAD Y ADOPCION</div>'
                 '<div style="display:flex;justify-content:space-around;text-align:center;margin-bottom:8px">'
                 '<div><div class="t-sub">Score Utilidad</div><div style="color:'+score_col+';font-size:18px;font-weight:700">'+str(score)+'/10</div><div class="t-sub">'+score_label+'</div></div>'
-                '<div><div class="t-sub">Dev Activity</div><div style="color:'+dev_col+'">'+str(utility["commits_4w"])+' commits/4w</div><div class="t-sub">⭐ '+str(utility["stars"])+' stars</div></div>'
-                '<div><div class="t-sub">Comunidad</div><div style="color:#f1f5f9">🐦 '+utility["twitter"]+'</div><div class="t-sub">Reddit: '+utility["reddit"]+'</div></div>'
+                + dev_html + comm_html +
                 '</div><div class="divider"></div><div class="t-sub" style="margin-bottom:4px">🏷️ '+cats_txt+'</div>')
             if utility["desc"]:
                 util_html += '<div class="t-sub" style="font-style:italic;margin-top:4px">'+utility["desc"][:200]+'...</div>'

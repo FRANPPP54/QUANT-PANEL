@@ -1,7 +1,6 @@
 """
-Quant Panel Web v3.4 — Render / Streamlit Cloud
-KuCoin (primario) → CoinPaprika (fallback) → CoinGecko (supply/ATH)
-Fix v3.3: mejor manejo de rate limit CoinGecko + más fuentes de noticias
+Quant Panel Web v3.5 — Render / Streamlit Cloud
+KuCoin → CoinPaprika → CoinGecko · EN/ES · Hot Tokens · Donaciones visibles
 """
 import math
 import re
@@ -33,6 +32,74 @@ STABLECOINS = {"usdt","usdc","busd","dai","tusd","fdusd","usdd","usdp","frax","e
 EMA_LEN=50; RSI_LEN=10; RSI_OS=45; RSI_OB=65
 VOL_LEN=14; VOL_MULT=1.5; ATR_LEN=14; SL_M=3.0; TP_M=4.5
 SESSION = requests.Session()
+
+# ── Donaciones — configurar aquí ──────────────────────────────────
+DONATE_COFFEE  = "https://buymeacoffee.com/TU_USUARIO"   # reemplazar
+DONATE_BTC     = "TU_DIRECCIÓN_BTC_AQUÍ"
+DONATE_ETH     = "TU_DIRECCIÓN_ETH_AQUÍ"
+DONATE_TRC20   = "TU_DIRECCIÓN_TRC20_AQUÍ"
+PIONEX_REF     = "https://www.pionex.com/es/signUp?r=oCNuZqFw"
+
+# ── Traducciones ES / EN ──────────────────────────────────────────
+T = {
+    "es": {
+        "title": "⚡ Quant Panel",
+        "subtitle": "Screener de Grid Bots · Pionex · v3.5",
+        "tabs": ["📡 Scanner","📊 Análisis","🔥 Hot","🌟 Potencial","⚙️ Ajustes","❓ Ayuda"],
+        "scan_title": "Mejores tokens para Grid Bot",
+        "scan_sub": "KuCoin · Price Action · Smart Entry 4 fases",
+        "scan_btn": "🔍 Escanear ahora",
+        "scan_vol": "💧 Volumen mínimo 24h",
+        "scan_top": "Mostrar top resultados",
+        "hot_title": "🔥 Hot Tokens",
+        "hot_trending": "Trending últimas 24h (CoinGecko)",
+        "hot_gainers": "Top Gainers del último scan",
+        "hot_sub": "Tokens con mayor movimiento ahora",
+        "analysis_title": "Análisis Individual",
+        "analysis_ticker": "Ticker",
+        "analysis_btn": "Analizar",
+        "analysis_cp": "⚡ Corto Plazo (1H · días)",
+        "analysis_lp": "📅 Largo Plazo (1D · semanas/meses)",
+        "disclaimer": "⚠️ No es recomendación de inversión.",
+        "donate_title": "☕ Apoyar el proyecto",
+        "donate_sub": "Quant Panel es 100% gratuito y sin publicidad.",
+        "coffee_btn": "☕ Invitame un café",
+        "pionex_btn": "📈 Abrir en Pionex",
+        "pionex_ref": "📈 Registrate en Pionex",
+        "vol_opts": {"25K — todos":25_000,"250K — activos":250_000,"500K — balance":500_000,"1M — líquidos":1_000_000,"5M — grandes":5_000_000},
+    },
+    "en": {
+        "title": "⚡ Quant Panel",
+        "subtitle": "Grid Bot Screener · Pionex · v3.5",
+        "tabs": ["📡 Scanner","📊 Analysis","🔥 Hot","🌟 Potential","⚙️ Settings","❓ Help"],
+        "scan_title": "Best tokens for Grid Bot",
+        "scan_sub": "KuCoin · Price Action · Smart Entry 4 phases",
+        "scan_btn": "🔍 Scan now",
+        "scan_vol": "💧 Minimum 24h volume",
+        "scan_top": "Show top results",
+        "hot_title": "🔥 Hot Tokens",
+        "hot_trending": "Trending last 24h (CoinGecko)",
+        "hot_gainers": "Top Gainers from last scan",
+        "hot_sub": "Tokens with biggest movement now",
+        "analysis_title": "Individual Analysis",
+        "analysis_ticker": "Ticker",
+        "analysis_btn": "Analyze",
+        "analysis_cp": "⚡ Short Term (1H · days)",
+        "analysis_lp": "📅 Long Term (1D · weeks/months)",
+        "disclaimer": "⚠️ Not financial advice.",
+        "donate_title": "☕ Support the project",
+        "donate_sub": "Quant Panel is 100% free and ad-free.",
+        "coffee_btn": "☕ Buy me a coffee",
+        "pionex_btn": "📈 Open in Pionex",
+        "pionex_ref": "📈 Sign up on Pionex",
+        "vol_opts": {"25K — all":25_000,"250K — active":250_000,"500K — balanced":500_000,"1M — liquid":1_000_000,"5M — large":5_000_000},
+    }
+}
+
+# Inicializar idioma
+if "lang" not in st.session_state:
+    st.session_state.lang = "es"
+L = T[st.session_state.lang]  # shortcut
 
 st.markdown("""<style>
 .main .block-container{padding:1rem 1rem 2rem 1rem;max-width:480px}
@@ -375,6 +442,55 @@ def get_ohlcv(coin,largo_plazo=False):
             c,v=coinpaprika_ohlcv(coin["cp_id"],days=7)
             if c and len(c)>=20: return c,v
     return None,None
+
+# ── Hot Tokens: trending CoinGecko ────────────────────────────────
+@st.cache_data(ttl=300)
+def get_trending_tokens():
+    """Top trending de CoinGecko últimas 24h — gratis, sin rate limit severo."""
+    r=api_get(f"{CG_BASE}/search/trending",timeout=8,retries=1)
+    if r is None: return []
+    try:
+        coins=r.json().get("coins",[])
+        result=[]
+        for c in coins[:10]:
+            item=c.get("item",{})
+            data=item.get("data",{})
+            price_str=data.get("price","")
+            change=data.get("price_change_percentage_24h",{})
+            change_24h=change.get("usd",0) if isinstance(change,dict) else 0
+            result.append({
+                "symbol":  item.get("symbol","").upper(),
+                "name":    item.get("name",""),
+                "rank":    item.get("market_cap_rank"),
+                "change_24h": round(change_24h,1),
+                "price_str": price_str,
+                "thumb":   item.get("thumb",""),
+            })
+        return result
+    except Exception: return []
+
+@st.cache_data(ttl=300)
+def get_top_gainers_kucoin(limit=10):
+    """Top gainers de KuCoin últimas 24h."""
+    r=api_get(f"{KUCOIN_BASE}/market/allTickers",timeout=15,retries=1)
+    if r is None: return []
+    try:
+        tickers=r.json().get("data",{}).get("ticker",[])
+        gainers=[]
+        for t in tickers:
+            sym=t.get("symbol","")
+            if not sym.endswith("-USDT"): continue
+            base=sym[:-5].lower()
+            if base in STABLECOINS: continue
+            vol=float(t.get("volValue",0) or 0)
+            if vol<500_000: continue
+            change=float(t.get("changeRate",0) or 0)*100
+            price=float(t.get("last",0) or 0)
+            if change>5 and price>0:
+                gainers.append({"symbol":base.upper(),"change_24h":round(change,1),"price":price,"vol_m":round(vol/1e6,1)})
+        gainers.sort(key=lambda x:x["change_24h"],reverse=True)
+        return gainers[:limit]
+    except Exception: return []
 
 # ── CoinPaprika: fundamentals fallback (sin rate limit, funciona en Render) ──
 @st.cache_data(ttl=3600)
@@ -779,16 +895,52 @@ def get_potencial_ai(tokens_data):
 # ══════════════════════════════════════════════════════════════════
 # UI
 # ══════════════════════════════════════════════════════════════════
-st.markdown("# ⚡ Quant Panel")
-st.markdown('<p class="t-sub">Screener · Pionex · v3.4 — KuCoin + CoinPaprika</p>',unsafe_allow_html=True)
-tab1,tab2,tab3,tab4,tab5=st.tabs(["📡 Scanner","📊 Analisis","🌟 Potencial","⚙️ Ajustes","❓ Ayuda"])
+
+# ── Toggle de idioma ──────────────────────────────────────────────
+col_title, col_lang = st.columns([4, 1])
+with col_title:
+    st.markdown(f"# {L['title']}")
+    st.markdown(f'<p class="t-sub">{L["subtitle"]}</p>', unsafe_allow_html=True)
+with col_lang:
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("🇬🇧 EN" if st.session_state.lang=="es" else "🇪🇸 ES", use_container_width=True):
+        st.session_state.lang = "en" if st.session_state.lang=="es" else "es"
+        st.rerun()
+
+# ── Barra de donación visible ─────────────────────────────────────
+st.markdown(f"""
+<div style="background:linear-gradient(135deg,#1c1400,#2d1f00);border:1px solid #854d0e;
+     border-radius:10px;padding:8px 14px;margin-bottom:12px;
+     display:flex;justify-content:space-between;align-items:center">
+  <span style="color:#f59e0b;font-size:12px">
+    ☕ {'¿Te resulta útil? Apoyá el proyecto' if st.session_state.lang=='es' else 'Find it useful? Support the project'}
+  </span>
+  <span style="display:flex;gap:8px">
+    <a href="{DONATE_COFFEE}" target="_blank"
+       style="background:#FFDD00;color:#000;border-radius:6px;padding:4px 10px;
+              font-size:11px;font-weight:700;text-decoration:none">☕ Café</a>
+    <a href="{PIONEX_REF}" target="_blank"
+       style="background:#f59e0b;color:#000;border-radius:6px;padding:4px 10px;
+              font-size:11px;font-weight:700;text-decoration:none">📈 Pionex</a>
+  </span>
+</div>
+""", unsafe_allow_html=True)
+
+tab1,tab2,tab3,tab4,tab5,tab6=st.tabs(L["tabs"])
 
 with tab1:
-    st.markdown("### Mejores tokens para Grid Bot")
-    vol_opciones={"25K  — todos los tokens":25_000,"250K — tokens activos":250_000,"500K — balance":500_000,"1M   — mayor liquidez":1_000_000,"5M   — solo grandes":5_000_000}
-    vol_label=st.selectbox("💧 Volumen minimo 24h",list(vol_opciones.keys()),index=2)
+    st.markdown(f"### {L['scan_title']}")
+    st.caption(L["scan_sub"])
+    vol_opciones = L["vol_opts"]
+    vol_label=st.selectbox(L["scan_vol"],list(vol_opciones.keys()),index=2)
     vol_min=vol_opciones[vol_label]
-    top_n=st.slider("Top resultados a mostrar",min_value=5,max_value=50,value=10,step=5)
+
+    # Selector límite 10/20/50
+    top_n = st.select_slider(
+        L["scan_top"],
+        options=[10, 20, 50],
+        value=10
+    )
     st.session_state.setdefault("scan_results",[])
     st.session_state.setdefault("scan_total",0)
     st.session_state.setdefault("scan_source","")
@@ -1057,7 +1209,68 @@ with tab2:
     elif do_analyze:
         st.warning("Ingresa un ticker primero.")
 
+# ── TAB 3: HOT TOKENS ─────────────────────────────────────────────
 with tab3:
+    st.markdown(f"### {L['hot_title']}")
+    st.caption(L["hot_sub"])
+
+    hot_limit = st.select_slider(
+        "Mostrar" if st.session_state.lang=="es" else "Show",
+        options=[10, 20],
+        value=10
+    )
+
+    col_r, col_g = st.columns(2)
+
+    with col_r:
+        st.markdown(f"**{L['hot_trending']}**")
+        with st.spinner("Cargando..." if st.session_state.lang=="es" else "Loading..."):
+            trending = get_trending_tokens()
+        if trending:
+            for t in trending[:hot_limit]:
+                cc = "t-green" if t["change_24h"] >= 0 else "t-red"
+                rank_txt = f"#{t['rank']}" if t["rank"] else "—"
+                st.markdown(f"""
+                <div class="card" style="padding:8px 12px;margin-bottom:6px">
+                  <div style="display:flex;justify-content:space-between;align-items:center">
+                    <span style="color:#f1f5f9;font-weight:700;font-size:14px">{t['symbol']}</span>
+                    <span class="{cc}">{t['change_24h']:+.1f}%</span>
+                  </div>
+                  <div style="display:flex;justify-content:space-between" class="t-sub">
+                    <span>{t['name'][:18]}</span>
+                    <span>{rank_txt}</span>
+                  </div>
+                </div>""", unsafe_allow_html=True)
+                if st.button(f"📊 {t['symbol']}", key=f"hot_tr_{t['symbol']}", use_container_width=True):
+                    st.session_state["analisis_sym"] = t["symbol"]
+                    st.session_state["analisis_trigger"] = True
+        else:
+            st.caption("CoinGecko trending no disponible")
+
+    with col_g:
+        st.markdown(f"**{L['hot_gainers']}**")
+        with st.spinner("Cargando..." if st.session_state.lang=="es" else "Loading..."):
+            gainers = get_top_gainers_kucoin(limit=hot_limit)
+        if gainers:
+            for g in gainers[:hot_limit]:
+                st.markdown(f"""
+                <div class="card" style="padding:8px 12px;margin-bottom:6px">
+                  <div style="display:flex;justify-content:space-between;align-items:center">
+                    <span style="color:#f1f5f9;font-weight:700;font-size:14px">{g['symbol']}</span>
+                    <span class="t-green">+{g['change_24h']}%</span>
+                  </div>
+                  <div style="display:flex;justify-content:space-between" class="t-sub">
+                    <span>{fmt_p(g['price'])}</span>
+                    <span>{g['vol_m']}M$</span>
+                  </div>
+                </div>""", unsafe_allow_html=True)
+                if st.button(f"📊 {g['symbol']}", key=f"hot_gn_{g['symbol']}", use_container_width=True):
+                    st.session_state["analisis_sym"] = g["symbol"]
+                    st.session_state["analisis_trigger"] = True
+        else:
+            st.caption("Escanea primero para ver gainers" if st.session_state.lang=="es" else "Run a scan first to see gainers")
+
+with tab4:
     st.markdown("### 🌟 Tokens con Potencial")
     if not st.session_state.get("scan_results"):
         st.info("💡 Primero ejecuta un escaneo en el tab Scanner.")
@@ -1128,7 +1341,7 @@ with tab3:
         else:
             st.info("💡 Agrega ANTHROPIC_KEY para activar la evaluacion IA.")
 
-with tab4:
+with tab5:
     st.markdown("### Ajustes")
     st.code('# Render → Environment Variables:\nANTHROPIC_KEY = "sk-ant-..."')
     st.info("En Render la key va en Environment, no en Secrets.")
@@ -1142,7 +1355,7 @@ with tab4:
     """)
     st.caption("⚠️ Informacion de mercado. No es recomendacion de inversion.")
 
-with tab5:
+with tab6:
     subtab1, subtab2 = st.tabs(["❓ FAQ", "☕ Apoyar"])
 
     # ── FAQ ────────────────────────────────────────────────────────

@@ -830,6 +830,7 @@ with tab1:
         if st.button(f"🔍 Analizar {r['token']}", key=f"btn_analisis_{r['token']}", use_container_width=True):
             st.session_state["analisis_sym"] = r["token"]
             st.session_state["analisis_trigger"] = True
+            st.rerun()
 
 with tab2:
     st.markdown("### Analisis Individual")
@@ -840,9 +841,14 @@ with tab2:
     with c2: do_analyze=st.button("Analizar",type="primary",use_container_width=True)
 
     # Auto-trigger desde scanner
-    if st.session_state.get("analisis_trigger") and st.session_state.get("analisis_sym"):
-        sym_input = st.session_state["analisis_sym"]
+    auto_sym = st.session_state.get("analisis_sym", "") if st.session_state.get("analisis_trigger") else ""
+    if st.session_state.get("analisis_trigger"):
         st.session_state["analisis_trigger"] = False
+
+    if do_analyze and sym_input:
+        pass
+    elif auto_sym:
+        sym_input = auto_sym
         do_analyze = True
 
     if do_analyze and sym_input:
@@ -1100,4 +1106,3 @@ with tab4:
 - 📐 PA · 🚦 Smart Entry 4F/3F · 🤖 ML · 💥 Pump/Dump
     """)
     st.caption("⚠️ Informacion de mercado. No es recomendacion de inversion.")
-

@@ -723,135 +723,6 @@ def get_new_gems(limit=20):
     for r in results:
         if r["symbol"] not in seen: seen.add(r["symbol"]); unique.append(r)
     return unique[:limit]
-    MEME_EXCL = {"doge","shib","pepe","floki","bonk","wif","meme","babydoge",
-                 "safepal","grok","turbo","dogwifhat","coq","pnut","neiro","popcat",
-                 "cat","dog","inu","elon","moon","safe","cum","xxx"}
-    results = []
-
-    # ── Paso 1: obtener lista de coins recientes de CoinGecko ────
-    r_new = api_get(f"{CG_BASE}/coins/list/new", timeout=8, retries=1)
-    new_ids = []
-    if r_new:
-        try:
-            new_coins = r_new.json()
-            new_ids = [c.get("id") for c in new_coins[:60] if c.get("id")]
-        except Exception:
-            new_ids = []
-
-    # ── Paso 2: si /coins/list/new falla, usar gecko_desc como fallback ─
-    if not new_ids:
-        r_fb = api_get(f"{CG_BASE}/coins/markets",
-            params={"vs_currency":"usd","order":"gecko_desc",
-                    "per_page":100,"page":1,"sparkline":"false",
-                    "price_change_percentage":"24h,7d"},
-            timeout=10, retries=1)
-        if r_fb:
-            try:
-                for c in r_fb.json():
-                    sym=(c.get("symbol") or "").lower()
-                    if sym in STABLECOINS or any(m in sym for m in MEME_EXCL): continue
-                    total_supply = c.get("total_supply") or c.get("circulating_supply") or 0
-                    circ_supply  = c.get("circulating_supply") or 0
-                    mc  = c.get("market_cap") or 0
-                    fdv = c.get("fully_diluted_valuation") or 0
-                    vol = c.get("total_volume") or 0
-                    price = c.get("current_price") or 0
-                    if total_supply > 100_000_000 and total_supply != 0: continue
-                    if mc < 500_000 or mc > 500_000_000: continue
-                    if vol < 100_000 or price <= 0: continue
-                    if 0.95 <= price <= 1.05: continue  # excluir stablecoins
-                    fdv_mc = round(fdv/mc,1) if fdv and mc>0 else None
-                    circ_supply2 = c.get("circulating_supply") or 0
-                    circ_pct = round(circ_supply2/total_supply*100,1) if total_supply>0 and circ_supply2>0 else None
-                    quality = 10
-                    if fdv_mc and fdv_mc>5:  quality-=3
-                    if fdv_mc and fdv_mc>10: quality-=3
-                    if circ_pct and circ_pct<20: quality-=2
-                    c24=round(c.get("price_change_percentage_24h") or 0,1)
-                    c7d=round(c.get("price_change_percentage_7d_in_currency") or 0,1)
-                    def fmt_s(v):
-                        if v>=1e6: return f"{v/1e6:.1f}M"
-                        if v>=1e3: return f"{v/1e3:.0f}K"
-                        return str(int(v))
-                    results.append({
-                        "symbol":c.get("symbol","").upper(),"name":c.get("name",""),
-                        "price":price,"change_24h":c24,"change_7d":c7d,
-                        "mc":mc,"vol":vol,"supply_fmt":fmt_s(total_supply) if total_supply else "N/A",
-                        "fdv_mc":fdv_mc,"circ_pct":circ_pct,"rank":c.get("market_cap_rank"),
-                        "quality":quality,"listed_date":"N/A","days_old":None,
-                    })
-            except Exception: pass
-        results.sort(key=lambda x:(x["quality"],x["vol"]),reverse=True)
-        seen=set(); unique=[]
-        for r in results:
-            if r["symbol"] not in seen: seen.add(r["symbol"]); unique.append(r)
-        return unique[:limit]
-
-    # ── Paso 3: obtener datos de mercado para los coins nuevos ────
-    # CoinGecko permite hasta 50 IDs por llamada
-    for batch_start in range(0, min(len(new_ids), 60), 50):
-        batch = new_ids[batch_start:batch_start+50]
-        ids_str = ",".join(batch)
-        r_mkt = api_get(f"{CG_BASE}/coins/markets",
-            params={"vs_currency":"usd","ids":ids_str,
-                    "order":"market_cap_desc","per_page":50,
-                    "sparkline":"false",
-                    "price_change_percentage":"24h,7d"},
-            timeout=10, retries=1)
-        if r_mkt is None: continue
-        try:
-            for c in r_mkt.json():
-                sym=(c.get("symbol") or "").lower()
-                if sym in STABLECOINS or any(m in sym for m in MEME_EXCL): continue
-                total_supply = c.get("total_supply") or c.get("circulating_supply") or 0
-                circ_supply  = c.get("circulating_supply") or 0
-                mc  = c.get("market_cap") or 0
-                fdv = c.get("fully_diluted_valuation") or 0
-                vol = c.get("total_volume") or 0
-                price = c.get("current_price") or 0
-                if total_supply > 100_000_000 and total_supply != 0: continue
-                if mc < 500_000 or mc > 500_000_000: continue
-                if vol < 100_000 or price <= 0: continue
-                if 0.95 <= price <= 1.05: continue  # excluir stablecoins
-                fdv_mc = round(fdv/mc,1) if fdv and mc>0 else None
-                circ_pct = round(circ_supply/total_supply*100,1) if total_supply>0 and circ_supply>0 else None
-                quality = 10
-                if fdv_mc and fdv_mc>5:  quality-=3
-                if fdv_mc and fdv_mc>10: quality-=3
-                if circ_pct and circ_pct<20: quality-=2
-                c24=round(c.get("price_change_percentage_24h") or 0,1)
-                c7d=round(c.get("price_change_percentage_7d_in_currency") or 0,1)
-                # Fecha de listado desde /coins/list/new
-                r_new2=r_new.json() if r_new else []
-                listed_date="N/A"; days_old=None
-                for nc in r_new2:
-                    if nc.get("id")==c.get("id"):
-                        activated=nc.get("activated_at")
-                        if activated:
-                            try:
-                                dt=datetime.fromtimestamp(activated,tz=timezone.utc)
-                                listed_date=dt.strftime("%d/%m/%Y")
-                                days_old=(datetime.now(timezone.utc)-dt).days
-                            except Exception: pass
-                        break
-                def fmt_s(v):
-                    if v>=1e6: return f"{v/1e6:.1f}M"
-                    if v>=1e3: return f"{v/1e3:.0f}K"
-                    return str(int(v))
-                results.append({
-                    "symbol":c.get("symbol","").upper(),"name":c.get("name",""),
-                    "price":price,"change_24h":c24,"change_7d":c7d,
-                    "mc":mc,"vol":vol,"supply_fmt":fmt_s(total_supply) if total_supply else "N/A",
-                    "fdv_mc":fdv_mc,"circ_pct":circ_pct,"rank":c.get("market_cap_rank"),
-                    "quality":quality,"listed_date":listed_date,"days_old":days_old,
-                })
-        except Exception: continue
-
-    results.sort(key=lambda x:(x["quality"],x["vol"]),reverse=True)
-    seen=set(); unique=[]
-    for r in results:
-        if r["symbol"] not in seen: seen.add(r["symbol"]); unique.append(r)
-    return unique[:limit]
 
 # ── CoinPaprika: fundamentals fallback (sin rate limit, funciona en Render) ──
 @st.cache_data(ttl=3600)
@@ -1848,4 +1719,134 @@ with tab5:
     """, unsafe_allow_html=True)
 
     st.markdown("**" + ("Como obtener acceso Premium?" if is_es else "How to get Premium access?") + "**")
-    paso1 = "1. Hace una donacion mini
+
+    pasos_es = [
+        "1. Hace una donacion minima de $5 en Buy Me a Coffee",
+        "2. Envia el comprobante por Telegram (@CryptoQuantPanel)",
+        "3. Recibis tu clave de acceso Premium por Telegram",
+        "4. Ingresa la clave en el menu lateral (icono ☰ arriba a la izquierda)",
+    ]
+    pasos_en = [
+        "1. Make a minimum $5 donation on Buy Me a Coffee",
+        "2. Send the receipt via Telegram (@CryptoQuantPanel)",
+        "3. Receive your Premium access key via Telegram",
+        "4. Enter the key in the sidebar menu (☰ icon top left)",
+    ]
+    pasos = pasos_es if is_es else pasos_en
+
+    pasos_html = '<div class="card" style="border-color:#166534;background:#052e16">'
+    for p in pasos:
+        pasos_html += f'<div style="color:#e2e8f0;font-size:13px;margin-bottom:6px">{p}</div>'
+    pasos_html += '</div>'
+    st.markdown(pasos_html, unsafe_allow_html=True)
+
+    st.markdown(
+        f'<a href="{DONATE_COFFEE}" target="_blank" '
+        f'style="display:block;text-align:center;background:#FFDD00;color:#000;'
+        f'border-radius:8px;padding:10px;font-size:14px;font-weight:700;'
+        f'text-decoration:none;margin:10px 0;">☕ {L["coffee_btn"]}</a>',
+        unsafe_allow_html=True)
+
+    st.markdown(
+        f'<a href="{TELEGRAM_LINK}" target="_blank" '
+        f'style="display:block;text-align:center;background:#229ED9;color:#fff;'
+        f'border-radius:8px;padding:10px;font-size:14px;font-weight:700;'
+        f'text-decoration:none;margin-bottom:16px;">✈️ '
+        f'{"Contactar por Telegram" if is_es else "Contact on Telegram"}</a>',
+        unsafe_allow_html=True)
+
+    # ── Wallets crypto ────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 💰 " + ("Donacion directa (crypto)" if is_es else "Direct crypto donation"))
+    st.caption("O si preferis, envia directamente a una de estas direcciones:" if is_es
+               else "Or if you prefer, send directly to one of these addresses:")
+
+    wallets = [
+        ("Bitcoin (BTC)", DONATE_BTC, "#f7931a"),
+        ("Ethereum (ETH)", DONATE_ETH, "#627eea"),
+        ("USDT (TRC20)", DONATE_TRC20, "#26a17b"),
+    ]
+    for nombre, addr, color in wallets:
+        st.markdown(f"""
+        <div class="card" style="padding:10px 14px;margin-bottom:8px">
+          <div style="color:{color};font-size:12px;font-weight:700;margin-bottom:4px">{nombre}</div>
+          <div style="font-family:monospace;font-size:11px;color:#94a3b8;word-break:break-all">{addr}</div>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown(
+        f'<a href="{PIONEX_REF}" target="_blank" '
+        f'style="display:block;text-align:center;background:#f59e0b;color:#000;'
+        f'border-radius:8px;padding:10px;font-size:14px;font-weight:700;'
+        f'text-decoration:none;">{L["pionex_ref"]}</a>',
+        unsafe_allow_html=True)
+    st.caption("Usando este link nos ayudas sin costo extra para vos 🙏" if is_es
+               else "Using this link supports us at no extra cost to you 🙏")
+
+# ── TAB 6: AJUSTES / SETTINGS ─────────────────────────────────────
+with tab6:
+    is_es = st.session_state.lang == "es"
+    st.markdown("### " + ("⚙️ Ajustes" if is_es else "⚙️ Settings"))
+
+    st.markdown("**" + ("Estado de la cuenta" if is_es else "Account status") + "**")
+    st.markdown(f"""
+    <div class="card">
+      <div class="t-sub">{"Plan actual" if is_es else "Current plan"}</div>
+      <div style="font-size:16px;font-weight:700;color:{'#10b981' if is_premium() else '#f59e0b'}">{PLAN["label"]}</div>
+    </div>""", unsafe_allow_html=True)
+
+    st.markdown("**" + ("Idioma" if is_es else "Language") + "**")
+    st.caption("Usá el boton EN/ES arriba a la derecha del panel." if is_es
+               else "Use the EN/ES button at the top right of the panel.")
+
+    st.markdown("**" + ("Cache" if is_es else "Cache") + "**")
+    st.caption("Los datos de mercado se cachean unos minutos para no saturar las APIs." if is_es
+               else "Market data is cached for a few minutes to avoid overloading the APIs.")
+    if st.button("🔄 " + ("Limpiar cache y recargar" if is_es else "Clear cache and reload"), use_container_width=True):
+        st.cache_data.clear()
+        st.success("✅ " + ("Cache limpiada" if is_es else "Cache cleared"))
+        st.rerun()
+
+    st.markdown("**" + ("Fuentes de datos" if is_es else "Data sources") + "**")
+    st.markdown(f"""
+    <div class="card">
+      <div class="t-sub">1️⃣ KuCoin — {"precios y velas (principal)" if is_es else "prices and candles (primary)"}</div>
+      <div class="t-sub">2️⃣ CoinPaprika — {"respaldo" if is_es else "fallback"}</div>
+      <div class="t-sub">3️⃣ CoinGecko — {"fundamentos, trending" if is_es else "fundamentals, trending"}</div>
+    </div>""", unsafe_allow_html=True)
+
+    if is_premium():
+        st.markdown("**" + ("Cuenta Premium" if is_es else "Premium account") + "**")
+        if st.button("🔓 " + ("Cerrar sesion Premium" if is_es else "Log out of Premium"), use_container_width=True):
+            st.session_state["premium"] = False
+            st.session_state["premium_pwd"] = ""
+            st.rerun()
+
+    st.divider()
+    st.caption(f"Quant Panel v3.6 · FP Quant")
+
+# ── TAB 7: AYUDA / HELP ───────────────────────────────────────────
+with tab7:
+    is_es = st.session_state.lang == "es"
+    st.markdown("### " + ("❓ Ayuda" if is_es else "❓ Help"))
+
+    faqs_es = [
+        ("¿Qué es el Scanner?",
+         "Escanea el mercado y calcula un score para cada token segun 6 estrategias de bot (Grid Long/Short, Infinity Long/Short, DCA Long/Short), eligiendo la mejor para cada uno."),
+        ("¿Qué es Smart Entry?",
+         "Un sistema de 4 fases (corto plazo) o 3 fases (largo plazo) que valida tendencia, momentum, volumen y price action antes de sugerir una entrada."),
+        ("¿Qué significa el score?",
+         "Es un puntaje relativo que combina choppiness, volatilidad, liquidez y movimiento reciente. Cuanto mas alto, mejor se ajusta el token a esa estrategia de bot."),
+        ("¿Qué son los New Gems?",
+         "Tokens con supply circulante bajo (menos de 100M), market cap entre $500K y $500M, y volumen minimo, filtrando stablecoins y memecoins."),
+        ("¿Cómo activo el Plan Premium?",
+         "Hace una donacion minima de $5 (tab Apoyo), recibis tu clave por Telegram, y la ingresas en el menu lateral (icono ☰)."),
+        ("¿Los datos son en tiempo real?",
+         "Se cachean unos minutos (60s-30min segun el endpoint) para evitar rate limits de las APIs gratuitas."),
+    ]
+    faqs_en = [
+        ("What is the Scanner?",
+         "Scans the market and computes a score for each token across 6 bot strategies (Grid Long/Short, Infinity Long/Short, DCA Long/Short), picking the best fit for each."),
+        ("What is Smart Entry?",
+         "A 4-phase (short term) or 3-phase (long term) system that checks trend, momentum, volume and price action before suggesting an entry."),
+        ("What does the score 

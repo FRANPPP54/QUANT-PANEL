@@ -35,9 +35,9 @@ SESSION = requests.Session()
 
 # ── Donaciones — configurar aquí ──────────────────────────────────
 DONATE_COFFEE  = "https://buymeacoffee.com/CryptoQuantPanel"
-DONATE_BTC     = "TU_DIRECCIÓN_BTC_AQUÍ"
-DONATE_ETH     = "TU_DIRECCIÓN_ETH_AQUÍ"
-DONATE_TRC20   = "TU_DIRECCIÓN_TRC20_AQUÍ"
+DONATE_BTC     = "bc1qw9rae7d76duwmew7ujyqxujxle6qn0pawl2thm"
+DONATE_ETH     = "0xD3A27fD8D9d805Df38Ea9a5e5453E5d5A8a34F94"
+DONATE_TRC20   = "TNv78ZEFXFtsbezvzosnoS5gH3gGjUYXHh"
 PIONEX_REF     = "https://www.pionex.com/es/signUp?r=oCNuZqFw"
 
 # ── Traducciones ES / EN ──────────────────────────────────────────
@@ -45,7 +45,7 @@ T = {
     "es": {
         "title": "⚡ Quant Panel",
         "subtitle": "Screener de Grid Bots · Pionex · v3.5",
-        "tabs": ["📡 Scanner","📊 Análisis","🔥 Hot","🌟 Potencial","⚙️ Ajustes","❓ Ayuda"],
+        "tabs": ["📡 Scanner","📊 Análisis","🔥 Hot","🌟 Potencial","☕ Apoyo","⚙️ Ajustes","❓ Ayuda"],
         "scan_title": "Mejores tokens para Grid Bot",
         "scan_sub": "KuCoin · Price Action · Smart Entry 4 fases",
         "scan_btn": "🔍 Escanear ahora",
@@ -71,7 +71,7 @@ T = {
     "en": {
         "title": "⚡ Quant Panel",
         "subtitle": "Grid Bot Screener · Pionex · v3.5",
-        "tabs": ["📡 Scanner","📊 Analysis","🔥 Hot","🌟 Potential","⚙️ Settings","❓ Help"],
+        "tabs": ["📡 Scanner","📊 Analysis","🔥 Hot","🌟 Potential","☕ Support","⚙️ Settings","❓ Help"],
         "scan_title": "Best tokens for Grid Bot",
         "scan_sub": "KuCoin · Price Action · Smart Entry 4 phases",
         "scan_btn": "🔍 Scan now",
@@ -494,93 +494,135 @@ def get_top_gainers_kucoin(limit=10):
 
 @st.cache_data(ttl=900)
 def get_new_gems(limit=20):
-    """Tokens con supply < 100M, fundamentos sólidos y respaldo financiero.
-    Criterios:
-    - Supply total < 100 millones de tokens (escasez)
-    - Market cap entre $500K y $500M (no micro-cap ni mega-cap)
-    - Volumen 24h > $100K (liquidez real)
-    - FDV/MC ratio < 5 (poca dilución futura)
-    - No stablecoins, no meme coins conocidos
-    Fuente: CoinGecko /coins/markets (gecko_desc = proyectos con mejor score de calidad)
+    """Tokens NUEVOS (<90 días) con supply <100M y fundamentos sólidos.
+    Estrategia:
+    1. CoinGecko /coins/list/new → tokens listados recientemente
+    2. Filtrar por supply <100M, MC >$500K, vol >$100K
+    3. Excluir meme coins y stablecoins
     """
     MEME_EXCL = {"doge","shib","pepe","floki","bonk","wif","meme","babydoge",
-                 "safepal","grok","turbo","dogwifhat","coq","pnut","neiro","popcat"}
-    results=[]
-    # Dos páginas para tener más candidatos
-    for page in range(1,3):
-        r=api_get(f"{CG_BASE}/coins/markets",
+                 "safepal","grok","turbo","dogwifhat","coq","pnut","neiro","popcat",
+                 "cat","dog","inu","elon","moon","safe","cum","xxx"}
+    results = []
+
+    # ── Paso 1: obtener lista de coins recientes de CoinGecko ────
+    r_new = api_get(f"{CG_BASE}/coins/list/new", timeout=8, retries=1)
+    new_ids = []
+    if r_new:
+        try:
+            new_coins = r_new.json()
+            new_ids = [c.get("id") for c in new_coins[:60] if c.get("id")]
+        except Exception:
+            new_ids = []
+
+    # ── Paso 2: si /coins/list/new falla, usar gecko_desc como fallback ─
+    if not new_ids:
+        r_fb = api_get(f"{CG_BASE}/coins/markets",
             params={"vs_currency":"usd","order":"gecko_desc",
-                    "per_page":100,"page":page,
+                    "per_page":100,"page":1,"sparkline":"false",
+                    "price_change_percentage":"24h,7d"},
+            timeout=10, retries=1)
+        if r_fb:
+            try:
+                for c in r_fb.json():
+                    sym=(c.get("symbol") or "").lower()
+                    if sym in STABLECOINS or any(m in sym for m in MEME_EXCL): continue
+                    total_supply = c.get("total_supply") or c.get("circulating_supply") or 0
+                    circ_supply  = c.get("circulating_supply") or 0
+                    mc  = c.get("market_cap") or 0
+                    fdv = c.get("fully_diluted_valuation") or 0
+                    vol = c.get("total_volume") or 0
+                    price = c.get("current_price") or 0
+                    if total_supply > 100_000_000 and total_supply != 0: continue
+                    if mc < 500_000 or mc > 500_000_000: continue
+                    if vol < 100_000 or price <= 0: continue
+                    fdv_mc = round(fdv/mc,1) if fdv and mc>0 else None
+                    circ_supply2 = c.get("circulating_supply") or 0
+                    circ_pct = round(circ_supply2/total_supply*100,1) if total_supply>0 and circ_supply2>0 else None
+                    quality = 10
+                    if fdv_mc and fdv_mc>5:  quality-=3
+                    if fdv_mc and fdv_mc>10: quality-=3
+                    if circ_pct and circ_pct<20: quality-=2
+                    c24=round(c.get("price_change_percentage_24h") or 0,1)
+                    c7d=round(c.get("price_change_percentage_7d_in_currency") or 0,1)
+                    def fmt_s(v):
+                        if v>=1e6: return f"{v/1e6:.1f}M"
+                        if v>=1e3: return f"{v/1e3:.0f}K"
+                        return str(int(v))
+                    results.append({
+                        "symbol":c.get("symbol","").upper(),"name":c.get("name",""),
+                        "price":price,"change_24h":c24,"change_7d":c7d,
+                        "mc":mc,"vol":vol,"supply_fmt":fmt_s(total_supply) if total_supply else "N/A",
+                        "fdv_mc":fdv_mc,"circ_pct":circ_pct,"rank":c.get("market_cap_rank"),
+                        "quality":quality,"listed_date":"N/A","days_old":None,
+                    })
+            except Exception: pass
+        results.sort(key=lambda x:(x["quality"],x["vol"]),reverse=True)
+        seen=set(); unique=[]
+        for r in results:
+            if r["symbol"] not in seen: seen.add(r["symbol"]); unique.append(r)
+        return unique[:limit]
+
+    # ── Paso 3: obtener datos de mercado para los coins nuevos ────
+    # CoinGecko permite hasta 50 IDs por llamada
+    for batch_start in range(0, min(len(new_ids), 60), 50):
+        batch = new_ids[batch_start:batch_start+50]
+        ids_str = ",".join(batch)
+        r_mkt = api_get(f"{CG_BASE}/coins/markets",
+            params={"vs_currency":"usd","ids":ids_str,
+                    "order":"market_cap_desc","per_page":50,
                     "sparkline":"false",
                     "price_change_percentage":"24h,7d"},
             timeout=10, retries=1)
-        if r is None: break
+        if r_mkt is None: continue
         try:
-            for c in r.json():
+            for c in r_mkt.json():
                 sym=(c.get("symbol") or "").lower()
-                if sym in STABLECOINS or sym in MEME_EXCL: continue
-
-                total_supply = c.get("total_supply")   or 0
+                if sym in STABLECOINS or any(m in sym for m in MEME_EXCL): continue
+                total_supply = c.get("total_supply") or c.get("circulating_supply") or 0
                 circ_supply  = c.get("circulating_supply") or 0
-                max_supply   = c.get("max_supply")     or total_supply or 0
-                mc    = c.get("market_cap")   or 0
-                fdv   = c.get("fully_diluted_valuation") or 0
-                vol   = c.get("total_volume") or 0
+                mc  = c.get("market_cap") or 0
+                fdv = c.get("fully_diluted_valuation") or 0
+                vol = c.get("total_volume") or 0
                 price = c.get("current_price") or 0
-                rank  = c.get("market_cap_rank")
-
-                # Filtro 1: supply < 100M (si hay dato)
-                supply_check = total_supply or circ_supply
-                if supply_check > 100_000_000: continue
-
-                # Filtro 2: MC entre $500K y $500M
+                if total_supply > 100_000_000 and total_supply != 0: continue
                 if mc < 500_000 or mc > 500_000_000: continue
-
-                # Filtro 3: volumen mínimo $100K
-                if vol < 100_000: continue
-
-                # Filtro 4: precio válido
-                if price <= 0: continue
-
-                # Score de calidad (mayor = mejor)
-                fdv_mc  = round(fdv/mc, 1)   if fdv and mc > 0 else None
-                vol_mc  = round(vol/mc, 3)   if mc > 0 else 0
-                circ_pct= round(circ_supply/total_supply*100,1) if total_supply>0 and circ_supply>0 else None
-
-                # Penalizar alta dilución futura
+                if vol < 100_000 or price <= 0: continue
+                fdv_mc = round(fdv/mc,1) if fdv and mc>0 else None
+                circ_pct = round(circ_supply/total_supply*100,1) if total_supply>0 and circ_supply>0 else None
                 quality = 10
-                if fdv_mc and fdv_mc > 5:  quality -= 3
-                if fdv_mc and fdv_mc > 10: quality -= 3
-                if circ_pct and circ_pct < 20: quality -= 2  # <20% circulante = mucho unlock por venir
-
-                c24 = round(c.get("price_change_percentage_24h") or 0, 1)
-                c7d = round(c.get("price_change_percentage_7d_in_currency") or 0, 1)
-
-                def fmt_supply(v):
+                if fdv_mc and fdv_mc>5:  quality-=3
+                if fdv_mc and fdv_mc>10: quality-=3
+                if circ_pct and circ_pct<20: quality-=2
+                c24=round(c.get("price_change_percentage_24h") or 0,1)
+                c7d=round(c.get("price_change_percentage_7d_in_currency") or 0,1)
+                # Fecha de listado desde /coins/list/new
+                r_new2=r_new.json() if r_new else []
+                listed_date="N/A"; days_old=None
+                for nc in r_new2:
+                    if nc.get("id")==c.get("id"):
+                        activated=nc.get("activated_at")
+                        if activated:
+                            try:
+                                dt=datetime.fromtimestamp(activated,tz=timezone.utc)
+                                listed_date=dt.strftime("%d/%m/%Y")
+                                days_old=(datetime.now(timezone.utc)-dt).days
+                            except Exception: pass
+                        break
+                def fmt_s(v):
                     if v>=1e6: return f"{v/1e6:.1f}M"
                     if v>=1e3: return f"{v/1e3:.0f}K"
                     return str(int(v))
-
                 results.append({
-                    "symbol":    c.get("symbol","").upper(),
-                    "name":      c.get("name",""),
-                    "price":     price,
-                    "change_24h":c24,
-                    "change_7d": c7d,
-                    "mc":        mc,
-                    "vol":       vol,
-                    "supply_fmt":fmt_supply(supply_check) if supply_check else "N/A",
-                    "fdv_mc":    fdv_mc,
-                    "circ_pct":  circ_pct,
-                    "vol_mc":    vol_mc,
-                    "rank":      rank,
-                    "quality":   quality,
+                    "symbol":c.get("symbol","").upper(),"name":c.get("name",""),
+                    "price":price,"change_24h":c24,"change_7d":c7d,
+                    "mc":mc,"vol":vol,"supply_fmt":fmt_s(total_supply) if total_supply else "N/A",
+                    "fdv_mc":fdv_mc,"circ_pct":circ_pct,"rank":c.get("market_cap_rank"),
+                    "quality":quality,"listed_date":listed_date,"days_old":days_old,
                 })
         except Exception: continue
 
-    # Ordenar por calidad desc, luego volumen desc
-    results.sort(key=lambda x: (x["quality"], x["vol"]), reverse=True)
-    # Deduplicar por símbolo
+    results.sort(key=lambda x:(x["quality"],x["vol"]),reverse=True)
     seen=set(); unique=[]
     for r in results:
         if r["symbol"] not in seen: seen.add(r["symbol"]); unique.append(r)
@@ -1020,7 +1062,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-tab1,tab2,tab3,tab4,tab5,tab6=st.tabs(L["tabs"])
+tab1,tab2,tab3,tab4,tab5,tab6,tab7=st.tabs(L["tabs"])
 
 with tab1:
     st.markdown(f"### {L['scan_title']}")
@@ -1420,6 +1462,7 @@ with tab3:
                 <span style="font-size:11px;color:#64748b">Vol 24h: {fmt_mc(g['vol'])}</span>
                 <span style="font-size:11px;color:{q_col}">Calidad: {q}/10</span>
               </div>
+              {f'<div style="margin-top:4px"><span style="background:#1e3a5f;border-radius:5px;padding:2px 6px;font-size:11px;color:#93c5fd">📅 Listado: {g["listed_date"]} ({g["days_old"]}d)</span></div>' if g.get("days_old") is not None else ''}
             </div>""", unsafe_allow_html=True)
 
             c1, c2 = st.columns(2)
@@ -1507,7 +1550,57 @@ with tab4:
         else:
             st.info("💡 Agrega ANTHROPIC_KEY para activar la evaluacion IA.")
 
+# ── TAB 5: APOYO / SUPPORT ────────────────────────────────────────
 with tab5:
+    is_es = st.session_state.lang == "es"
+    st.markdown(f"### {L['donate_title']}")
+    st.markdown(L["donate_sub"])
+
+    # Buy Me a Coffee
+    st.markdown("---")
+    st.markdown("#### ☕ Buy Me a Coffee" if is_es else "#### ☕ Buy Me a Coffee")
+    st.markdown("La forma más simple — acepta tarjeta y crypto." if is_es else "Simplest way — accepts card and crypto.")
+    st.markdown(
+        f'<a href="{DONATE_COFFEE}" target="_blank" '
+        f'style="display:block;text-align:center;background:#FFDD00;color:#000;'
+        f'border-radius:10px;padding:14px;font-size:15px;font-weight:700;'
+        f'text-decoration:none;margin-bottom:12px;">'
+        f'☕ {L["coffee_btn"]}</a>',
+        unsafe_allow_html=True)
+
+    # Crypto directo
+    st.markdown("---")
+    st.markdown("#### 🪙 Donación directa en Crypto" if is_es else "#### 🪙 Direct Crypto Donation")
+    st.markdown("Sin intermediarios — cero comisiones de plataforma." if is_es else "No middlemen — zero platform fees.")
+
+    def crypto_card(icon, label, address, color):
+        st.markdown(f"""
+        <div class="card" style="border-color:{color}">
+          <div style="color:{color};font-size:13px;font-weight:700;margin-bottom:6px">{icon} {label}</div>
+          <div style="font-family:monospace;font-size:11px;color:#f1f5f9;
+                      word-break:break-all;background:#0f172a;
+                      padding:8px;border-radius:6px">{address}</div>
+        </div>""", unsafe_allow_html=True)
+        st.code(address, language=None)
+
+    crypto_card("₿", "Bitcoin (BTC)", DONATE_BTC, "#f59e0b")
+    crypto_card("Ξ", "Ethereum / USDT ERC-20", DONATE_ETH, "#10b981")
+    crypto_card("💵", "USDT TRC-20 (Tron — menores fees)" if is_es else "USDT TRC-20 (Tron — lowest fees)", DONATE_TRC20, "#3b82f6")
+
+    st.caption("⚠️ Verificá siempre la dirección antes de enviar. Las transacciones crypto son irreversibles." if is_es else "⚠️ Always verify the address before sending. Crypto transactions are irreversible.")
+
+    # Pionex
+    st.markdown("---")
+    st.markdown("#### 📈 " + ("Registrate en Pionex con mi link" if is_es else "Sign up on Pionex with my link"))
+    st.markdown("Sin costo para vos — recibo una pequeña comisión cuando operás." if is_es else "Free for you — I earn a small commission when you trade.")
+    st.markdown(
+        f'<a href="{PIONEX_REF}" target="_blank" '
+        f'style="display:block;text-align:center;background:#f59e0b;color:#000;'
+        f'border-radius:10px;padding:12px;font-size:14px;font-weight:700;'
+        f'text-decoration:none;">{L["pionex_ref"]}</a>',
+        unsafe_allow_html=True)
+
+with tab6:
     st.markdown("### Ajustes")
     st.code('# Render → Environment Variables:\nANTHROPIC_KEY = "sk-ant-..."')
     st.info("En Render la key va en Environment, no en Secrets.")
@@ -1521,15 +1614,10 @@ with tab5:
     """)
     st.caption("⚠️ Informacion de mercado. No es recomendacion de inversion.")
 
-with tab6:
-    subtab1, subtab2 = st.tabs(["❓ FAQ", "☕ Apoyar"])
-
-    # ── FAQ ────────────────────────────────────────────────────────
-    with subtab1:
-        st.markdown("### ❓ Preguntas Frecuentes")
-
-        with st.expander("📊 ¿Qué es el Score y cómo se calcula?"):
-            st.markdown("""
+with tab7:
+    st.markdown("### ❓ " + ("Preguntas Frecuentes" if st.session_state.lang=="es" else "FAQ"))
+    with st.expander("📊 ¿Qué es el Score y cómo se calcula?" if st.session_state.lang=="es" else "📊 What is the Score and how is it calculated?"):
+        st.markdown("""
 El **Score** es un número que indica qué tan adecuado es un token para cada tipo de bot.
 
 Se calcula combinando:
@@ -1542,8 +1630,8 @@ Se calcula combinando:
 **Rango típico:** 10–120. Más alto = mejor candidato para ese bot.
             """)
 
-        with st.expander("🔢 ¿Qué es el Choppiness Index?"):
-            st.markdown("""
+    with st.expander("🔢 ¿Qué es el Choppiness Index?"):
+        st.markdown("""
 El **Choppiness Index** mide si el precio se mueve en tendencia o lateralmente.
 
 - **Alto (>5)** → mercado lateral = ideal para Grid Bot
@@ -1552,8 +1640,8 @@ El **Choppiness Index** mide si el precio se mueve en tendencia o lateralmente.
 El Grid Bot gana dinero cuando el precio sube y baja dentro de un rango. Un Choppiness alto indica que eso está pasando.
             """)
 
-        with st.expander("🚦 ¿Qué significa el Semáforo Smart Entry?"):
-            st.markdown("""
+    with st.expander("🚦 ¿Qué significa el Semáforo Smart Entry?"):
+        st.markdown("""
 El **Smart Entry** evalúa 4 condiciones antes de entrar en una posición:
 
 | Fase | Condición | Qué significa |
@@ -1568,8 +1656,8 @@ El **Smart Entry** evalúa 4 condiciones antes de entrar en una posición:
 - 🔴 **≤2/4** → esperar mejor momento
             """)
 
-        with st.expander("📐 ¿Qué es el Price Action?"):
-            st.markdown("""
+    with st.expander("📐 ¿Qué es el Price Action?"):
+        st.markdown("""
 **Price Action** analiza la **forma** del gráfico, no solo los números.
 
 - **Estructura HH/HL** (Higher Highs / Higher Lows) → tendencia alcista
@@ -1580,8 +1668,8 @@ El **Smart Entry** evalúa 4 condiciones antes de entrar en una posición:
 La calidad va de 0 a 1. Un valor ≥ 0.55 indica un movimiento sólido.
             """)
 
-        with st.expander("🤖 ¿Qué es la Señal ML Lorentziana?"):
-            st.markdown("""
+    with st.expander("🤖 ¿Qué es la Señal ML Lorentziana?"):
+        st.markdown("""
 Es una señal de **Machine Learning** basada en el algoritmo k-NN (k vecinos más cercanos) con distancia Lorentziana.
 
 Funciona así:
@@ -1593,8 +1681,8 @@ Funciona así:
 ⚠️ Es una **aproximación simplificada** — no es el indicador original de TradingView. Úsala como una señal adicional, no como la única.
             """)
 
-        with st.expander("💥 ¿Qué es el detector Pump/Dump?"):
-            st.markdown("""
+    with st.expander("💥 ¿Qué es el detector Pump/Dump?"):
+        st.markdown("""
 Detecta movimientos inusuales de precio comparando:
 
 - **Movimiento 1h y 4h** — qué tan fuerte fue el cambio reciente
@@ -1611,8 +1699,8 @@ Detecta movimientos inusuales de precio comparando:
 - 🟢 POSIBLE SUELO → caída grande, volumen bajo = posible rebote
             """)
 
-        with st.expander("📊 ¿Qué bot usar según el mercado?"):
-            st.markdown("""
+    with st.expander("📊 ¿Qué bot usar según el mercado?"):
+        st.markdown("""
 | Situación | Bot recomendado |
 |-----------|----------------|
 | Precio lateral, sin tendencia clara | **Grid Long/Short** |
@@ -1624,8 +1712,8 @@ Detecta movimientos inusuales de precio comparando:
 **Regla general:** Grid Bot = lateral · Infinity = tendencia · DCA = correcciones
             """)
 
-        with st.expander("⚠️ Aviso legal"):
-            st.markdown("""
+    with st.expander("⚠️ Aviso legal"):
+        st.markdown("""
 Quant Panel es una herramienta de **análisis técnico automatizado**.
 
 - No es asesoramiento financiero
@@ -1635,73 +1723,4 @@ Quant Panel es una herramienta de **análisis técnico automatizado**.
 
 **Usá esta herramienta como apoyo a tu propio análisis, no como señal automática de entrada.**
             """)
-
-    # ── DONACIONES ─────────────────────────────────────────────────
-    with subtab2:
-        st.markdown("### ☕ Apoyar el proyecto")
-        st.markdown("""
-Quant Panel es **100% gratuito** y sin publicidad.
-
-Si te resulta útil y querés apoyar el desarrollo, podés hacerlo de estas formas:
-        """)
-
-        # Buy Me a Coffee
-        st.markdown("""
-#### ☕ Buy Me a Coffee
-La forma más simple — acepta tarjeta de crédito y algunas cryptos.
-        """)
-        st.markdown(
-            '<a href="https://buymeacoffee.com" target="_blank" '
-            'style="display:block;text-align:center;background:#FFDD00;color:#000;'
-            'border-radius:10px;padding:12px;font-size:14px;font-weight:700;'
-            'text-decoration:none;margin-bottom:12px;">☕ Invitame un café</a>',
-            unsafe_allow_html=True
-        )
-        st.caption("👆 Reemplazá el link con tu perfil real de Buy Me a Coffee")
-
-        st.divider()
-
-        # Crypto directo
-        st.markdown("#### 🪙 Donación directa en Crypto")
-        st.markdown("Sin intermediarios, sin comisiones de plataforma.")
-
-        st.markdown("""
-<div class="card">
-<div style="color:#f59e0b;font-size:13px;font-weight:700;margin-bottom:8px">₿ Bitcoin (BTC)</div>
-<div style="font-family:monospace;font-size:11px;color:#f1f5f9;word-break:break-all">TU_DIRECCIÓN_BTC_AQUÍ</div>
-</div>
-<div class="card">
-<div style="color:#10b981;font-size:13px;font-weight:700;margin-bottom:8px">Ξ Ethereum / USDT (ERC-20)</div>
-<div style="font-family:monospace;font-size:11px;color:#f1f5f9;word-break:break-all">TU_DIRECCIÓN_ETH_AQUÍ</div>
-</div>
-<div class="card">
-<div style="color:#3b82f6;font-size:13px;font-weight:700;margin-bottom:8px">💵 USDT (TRC-20 · Tron)</div>
-<div style="font-family:monospace;font-size:11px;color:#f1f5f9;word-break:break-all">TU_DIRECCIÓN_TRC20_AQUÍ</div>
-</div>
-        """, unsafe_allow_html=True)
-
-        st.divider()
-
-        # Pionex
-        st.markdown("#### 📈 Registrate en Pionex con mi link")
-        st.markdown("Sin costo para vos — yo recibo una pequeña comisión cuando operás.")
-        st.markdown(
-            '<a href="https://www.pionex.com/es/signUp?r=oCNuZqFw" target="_blank" '
-            'style="display:block;text-align:center;background:#f59e0b;color:#000;'
-            'border-radius:10px;padding:12px;font-size:14px;font-weight:700;'
-            'text-decoration:none;">📈 Abrir cuenta en Pionex</a>',
-            unsafe_allow_html=True
-        )
-
-        st.divider()
-        st.markdown("""
-#### 🙏 ¿Cómo obtengo mis direcciones crypto?
-
-Si no tenés billetera aún:
-- **Binance / KuCoin** → Cartera → Depositar → elegí la moneda → copiá la dirección
-- **Trust Wallet** → Recibir → elegí la moneda → copiá la dirección
-
-Luego reemplazá los textos `TU_DIRECCIÓN_XXX_AQUÍ` en el código con tus direcciones reales.
-        """)
-        st.caption("⚠️ Verificá siempre la dirección antes de enviar. Las transacciones crypto son irreversibles.")
 

@@ -1,10 +1,11 @@
 """
-Quant Panel Web v3.5 — Render / Streamlit Cloud
-KuCoin → CoinPaprika → CoinGecko · EN/ES · Hot Tokens · Donaciones visibles
+Quant Panel Web v3.6 — Render / Streamlit Cloud
+KuCoin → CoinPaprika → CoinGecko · EN/ES · Hot Tokens · Freemium
 """
 import math
 import re
 import time
+import hashlib
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 import os
@@ -33,12 +34,101 @@ EMA_LEN=50; RSI_LEN=10; RSI_OS=45; RSI_OB=65
 VOL_LEN=14; VOL_MULT=1.5; ATR_LEN=14; SL_M=3.0; TP_M=4.5
 SESSION = requests.Session()
 
-# ── Donaciones — configurar aquí ──────────────────────────────────
+# ── Donaciones ────────────────────────────────────────────────────
 DONATE_COFFEE  = "https://buymeacoffee.com/CryptoQuantPanel"
 DONATE_BTC     = "bc1qw9rae7d76duwmew7ujyqxujxle6qn0pawl2thm"
 DONATE_ETH     = "0xD3A27fD8D9d805Df38Ea9a5e5453E5d5A8a34F94"
 DONATE_TRC20   = "TNv78ZEFXFtsbezvzosnoS5gH3gGjUYXHh"
 PIONEX_REF     = "https://www.pionex.com/es/signUp?r=oCNuZqFw"
+TELEGRAM_LINK  = "https://t.me/CryptoQuantPanel"
+
+# ── Plan premium ──────────────────────────────────────────────────
+# Las contraseñas se guardan en Render → Environment Variables:
+# PREMIUM_PASSWORDS = "clave1,clave2,clave3"   (separadas por coma)
+# Para generar una nueva contraseña para un cliente:
+# Solo agregás otra clave a la lista.
+# Para revocar acceso: eliminás esa clave de la lista.
+
+def _get_premium_passwords():
+    raw = get_secret("PREMIUM_PASSWORDS", "")
+    if not raw: return set()
+    return {p.strip() for p in raw.split(",") if p.strip()}
+
+def _hash_pwd(pwd):
+    return hashlib.sha256(pwd.encode()).hexdigest()
+
+def check_premium(password):
+    """Verifica si la contraseña es válida para acceso premium."""
+    passwords = _get_premium_passwords()
+    if not passwords: return False
+    # Comparar hash para no exponer las claves en memoria
+    h = _hash_pwd(password)
+    return any(_hash_pwd(p) == h for p in passwords)
+
+def is_premium():
+    """True si el usuario actual tiene sesión premium activa."""
+    return st.session_state.get("premium", False)
+
+def render_login_sidebar():
+    """Muestra el panel de login/logout en la barra lateral."""
+    with st.sidebar:
+        if is_premium():
+            st.success("⭐ Plan Premium activo")
+            if st.button("Cerrar sesión", use_container_width=True):
+                st.session_state["premium"] = False
+                st.session_state["premium_pwd"] = ""
+                st.rerun()
+        else:
+            st.markdown("### 🔐 Acceso Premium")
+            st.caption("Ingresá tu contraseña de acceso")
+            pwd = st.text_input("Contraseña", type="password",
+                                key="login_input", label_visibility="collapsed")
+            if st.button("Ingresar", use_container_width=True, type="primary"):
+                if check_premium(pwd):
+                    st.session_state["premium"] = True
+                    st.session_state["premium_pwd"] = pwd
+                    st.success("✅ Acceso Premium activado")
+                    st.rerun()
+                else:
+                    st.error("Contraseña incorrecta")
+            st.divider()
+            st.markdown("**¿Sin contraseña?**")
+            st.markdown(
+                f'<a href="{DONATE_COFFEE}" target="_blank" '
+                f'style="display:block;text-align:center;background:#FFDD00;color:#000;'
+                f'border-radius:8px;padding:8px;font-size:12px;font-weight:700;'
+                f'text-decoration:none;margin-bottom:6px;">☕ Comprar acceso</a>',
+                unsafe_allow_html=True)
+            st.markdown(
+                f'<a href="{TELEGRAM_LINK}" target="_blank" '
+                f'style="display:block;text-align:center;background:#229ED9;color:#fff;'
+                f'border-radius:8px;padding:8px;font-size:12px;font-weight:700;'
+                f'text-decoration:none;margin-bottom:6px;">✈️ Contactar por Telegram</a>',
+                unsafe_allow_html=True)
+            st.caption("Donación mínima $5 · Recibís tu clave por Telegram")
+
+# ── Límites por plan ──────────────────────────────────────────────
+def get_plan_limits():
+    if is_premium():
+        return {
+            "scan_top_max": 50,       # top N del scanner
+            "scan_vol_min": 25_000,   # volumen mínimo
+            "gems_limit":   30,       # New Gems
+            "hot_limit":    20,       # Hot Tokens
+            "ai_enabled":   True,     # análisis IA
+            "lp_enabled":   True,     # largo plazo
+            "label": "⭐ Premium",
+        }
+    else:
+        return {
+            "scan_top_max": 10,       # solo top 10
+            "scan_vol_min": 500_000,  # volumen más restrictivo
+            "gems_limit":   5,        # solo 5 gems
+            "hot_limit":    5,        # solo 5 hot tokens
+            "ai_enabled":   False,    # sin IA
+            "lp_enabled":   False,    # sin largo plazo
+            "label": "🆓 Gratis",
+        }
 
 # ── Traducciones ES / EN ──────────────────────────────────────────
 T = {
@@ -545,6 +635,7 @@ def get_new_gems(limit=20):
                 if supply_check > 100_000_000 and supply_check != 0: continue
                 if mc < 500_000 or mc > 500_000_000: continue
                 if vol < 100_000 or price <= 0: continue
+                if 0.95 <= price <= 1.05: continue  # excluir stablecoins
 
                 # Fecha de listing desde CP
                 first_data = c.get("first_data_at","")
@@ -604,6 +695,7 @@ def get_new_gems(limit=20):
                     if total_supply > 100_000_000 and total_supply!=0: continue
                     if mc < 500_000 or mc > 500_000_000: continue
                     if vol < 100_000 or price <= 0: continue
+                    if 0.95 <= price <= 1.05: continue  # excluir stablecoins
                     fdv_mc = round(fdv/mc,1) if fdv and mc>0 else None
                     circ_pct = round(circ_supply/total_supply*100,1) if total_supply>0 and circ_supply>0 else None
                     quality = 10
@@ -667,6 +759,7 @@ def get_new_gems(limit=20):
                     if total_supply > 100_000_000 and total_supply != 0: continue
                     if mc < 500_000 or mc > 500_000_000: continue
                     if vol < 100_000 or price <= 0: continue
+                    if 0.95 <= price <= 1.05: continue  # excluir stablecoins
                     fdv_mc = round(fdv/mc,1) if fdv and mc>0 else None
                     circ_supply2 = c.get("circulating_supply") or 0
                     circ_pct = round(circ_supply2/total_supply*100,1) if total_supply>0 and circ_supply2>0 else None
@@ -719,6 +812,7 @@ def get_new_gems(limit=20):
                 if total_supply > 100_000_000 and total_supply != 0: continue
                 if mc < 500_000 or mc > 500_000_000: continue
                 if vol < 100_000 or price <= 0: continue
+                if 0.95 <= price <= 1.05: continue  # excluir stablecoins
                 fdv_mc = round(fdv/mc,1) if fdv and mc>0 else None
                 circ_pct = round(circ_supply/total_supply*100,1) if total_supply>0 and circ_supply>0 else None
                 quality = 10
@@ -1163,11 +1257,15 @@ def get_potencial_ai(tokens_data):
 # UI
 # ══════════════════════════════════════════════════════════════════
 
+# ── Login sidebar ─────────────────────────────────────────────────
+render_login_sidebar()
+PLAN = get_plan_limits()
+
 # ── Toggle de idioma ──────────────────────────────────────────────
 col_title, col_lang = st.columns([4, 1])
 with col_title:
     st.markdown(f"# {L['title']}")
-    st.markdown(f'<p class="t-sub">{L["subtitle"]}</p>', unsafe_allow_html=True)
+    st.markdown(f'<p class="t-sub">{L["subtitle"]} &nbsp;<span style="background:{"#064e3b" if is_premium() else "#1c1917"};color:{"#10b981" if is_premium() else "#f59e0b"};border-radius:6px;padding:2px 8px;font-size:11px;font-weight:700">{PLAN["label"]}</span></p>', unsafe_allow_html=True)
 with col_lang:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🇬🇧 EN" if st.session_state.lang=="es" else "🇪🇸 ES", use_container_width=True):
@@ -1186,6 +1284,9 @@ st.markdown(f"""
     <a href="{DONATE_COFFEE}" target="_blank"
        style="background:#FFDD00;color:#000;border-radius:6px;padding:4px 10px;
               font-size:11px;font-weight:700;text-decoration:none">☕ Café</a>
+    <a href="{TELEGRAM_LINK}" target="_blank"
+       style="background:#229ED9;color:#fff;border-radius:6px;padding:4px 10px;
+              font-size:11px;font-weight:700;text-decoration:none">✈️ Telegram</a>
     <a href="{PIONEX_REF}" target="_blank"
        style="background:#f59e0b;color:#000;border-radius:6px;padding:4px 10px;
               font-size:11px;font-weight:700;text-decoration:none">📈 Pionex</a>
@@ -1198,16 +1299,22 @@ tab1,tab2,tab3,tab4,tab5,tab6,tab7=st.tabs(L["tabs"])
 with tab1:
     st.markdown(f"### {L['scan_title']}")
     st.caption(L["scan_sub"])
-    vol_opciones = L["vol_opts"]
-    vol_label=st.selectbox(L["scan_vol"],list(vol_opciones.keys()),index=2)
+
+    # Mostrar banner según plan
+    if not is_premium():
+        st.markdown("""
+<div style="background:#1c1400;border:1px solid #854d0e;border-radius:10px;padding:10px 14px;margin-bottom:10px">
+<span style="color:#f59e0b;font-weight:700">🆓 Plan Gratis</span>
+<span style="color:#94a3b8;font-size:12px"> — Top 10 · Vol mín $500K · Sin IA · Sin Largo Plazo</span><br>
+<span style="color:#64748b;font-size:12px">🔐 Ingresá tu contraseña en la barra lateral ☰ para activar Premium</span>
+</div>""", unsafe_allow_html=True)
+
+    vol_opciones = {k:v for k,v in L["vol_opts"].items() if v >= (500_000 if not is_premium() else 25_000)}
+    vol_label=st.selectbox(L["scan_vol"],list(vol_opciones.keys()),index=0)
     vol_min=vol_opciones[vol_label]
 
-    # Selector límite 10/20/50
-    top_n = st.select_slider(
-        L["scan_top"],
-        options=[10, 20, 50],
-        value=10
-    )
+    top_options = [10,20,50] if is_premium() else [10]
+    top_n = st.select_slider(L["scan_top"], options=top_options, value=10)
     st.session_state.setdefault("scan_results",[])
     st.session_state.setdefault("scan_total",0)
     st.session_state.setdefault("scan_source","")
@@ -1305,9 +1412,16 @@ with tab1:
             st.session_state["analisis_trigger"] = True
 
 with tab2:
-    st.markdown("### Analisis Individual")
-    modo=st.radio("Modo",["⚡ Corto Plazo (1H · dias)","📅 Largo Plazo (1D · semanas/meses)"],horizontal=True,label_visibility="collapsed")
-    es_lp="Largo" in modo
+    st.markdown(f"### {L['analysis_title']}")
+
+    if not is_premium():
+        st.caption("🔐 Largo Plazo · IA · Utilidad disponibles en Plan Premium — ingresá tu clave en ☰")
+        modo_options = [L["analysis_cp"]]
+    else:
+        modo_options = [L["analysis_cp"], L["analysis_lp"]]
+
+    modo=st.radio("Modo", modo_options, horizontal=True, label_visibility="collapsed")
+    es_lp = ("Largo" in modo or "Long" in modo)
     c1,c2=st.columns([3,1])
     with c1: sym_input=st.text_input("Ticker",placeholder="BTC, SOL, SYN...",label_visibility="collapsed").upper().strip()
     with c2: do_analyze=st.button("Analizar",type="primary",use_container_width=True)
@@ -1372,10 +1486,12 @@ with tab2:
             st.write("Noticias RSS..."); news=get_news(sym_input, name=cg_name)
             unlocks=get_unlocks(sym_input)
             ai_text=None; utility_ai=None
-            if ANTHROPIC_KEY:
+            if ANTHROPIC_KEY and is_premium():
                 st.write("IA noticias..."); ai_text=get_ai(sym_input,news)
                 if utility:
                     st.write("IA utilidad..."); utility_ai=get_utility_ai(sym_input, utility.get("desc",""), utility.get("cats",[]), news)
+            elif ANTHROPIC_KEY and not is_premium():
+                st.caption("🔐 Análisis IA disponible en Plan Premium")
             status.update(label=f"✅ {sym_input} analizado · {data_source}",state="complete")
 
         modo_txt="📅 Largo Plazo · 1D" if es_lp else "⚡ Corto Plazo · 1H"
@@ -1481,11 +1597,17 @@ with tab3:
     st.markdown(f"### {L['hot_title']}")
     st.caption(L["hot_sub"])
 
+    hot_max = PLAN["hot_limit"]
+    gems_max = PLAN["gems_limit"]
+
+    hot_options = [5,10,20] if is_premium() else [5]
     hot_limit = st.select_slider(
         "Mostrar" if st.session_state.lang=="es" else "Show",
-        options=[10, 20],
-        value=10
+        options=hot_options,
+        value=min(10, hot_max)
     )
+    if not is_premium():
+        st.caption("🔐 Premium: hasta 20 trending + 30 gems · Ingresá tu clave en ☰")
 
     col_r, col_g = st.columns(2)
 
@@ -1545,7 +1667,7 @@ with tab3:
     st.caption(gems_sub)
 
     with st.spinner("Buscando gems..." if st.session_state.lang=="es" else "Searching gems..."):
-        gems = get_new_gems(limit=hot_limit)
+        gems = get_new_gems(limit=gems_max)
 
     if gems:
         def fmt_mc(v):
@@ -1687,171 +1809,43 @@ with tab5:
     st.markdown(f"### {L['donate_title']}")
     st.markdown(L["donate_sub"])
 
-    # Buy Me a Coffee
+    # Tabla de planes
     st.markdown("---")
-    st.markdown("#### ☕ Buy Me a Coffee" if is_es else "#### ☕ Buy Me a Coffee")
-    st.markdown("La forma más simple — acepta tarjeta y crypto." if is_es else "Simplest way — accepts card and crypto.")
-    st.markdown(
-        f'<a href="{DONATE_COFFEE}" target="_blank" '
-        f'style="display:block;text-align:center;background:#FFDD00;color:#000;'
-        f'border-radius:10px;padding:14px;font-size:15px;font-weight:700;'
-        f'text-decoration:none;margin-bottom:12px;">'
-        f'☕ {L["coffee_btn"]}</a>',
-        unsafe_allow_html=True)
+    st.markdown("### 📋 " + ("Planes" if is_es else "Plans"))
+    st.markdown(f"""
+<div style="display:flex;gap:10px;margin-bottom:16px">
+  <div class="card" style="flex:1;border-color:#1e293b">
+    <div style="color:#64748b;font-size:13px;font-weight:700;margin-bottom:8px">🆓 {"Gratis" if is_es else "Free"}</div>
+    <div style="color:#f1f5f9;font-size:20px;font-weight:700;margin-bottom:8px">$0</div>
+    <div style="font-size:12px;color:#94a3b8;line-height:1.8">
+      ✅ Scanner top 10<br>
+      ✅ Análisis técnico<br>
+      ✅ Price Action<br>
+      ✅ Smart Entry<br>
+      ✅ Hot Tokens (5)<br>
+      ✅ New Gems (5)<br>
+      ❌ Largo Plazo<br>
+      ❌ Análisis IA<br>
+      ❌ Scanner 50+<br>
+    </div>
+  </div>
+  <div class="card" style="flex:1;border-color:#166534;background:#052e16">
+    <div style="color:#10b981;font-size:13px;font-weight:700;margin-bottom:8px">⭐ Premium</div>
+    <div style="color:#f1f5f9;font-size:20px;font-weight:700;margin-bottom:4px">{"Donación" if is_es else "Donation"}</div>
+    <div style="color:#64748b;font-size:11px;margin-bottom:8px">{"mín $5 · acceso permanente" if is_es else "min $5 · lifetime access"}</div>
+    <div style="font-size:12px;color:#94a3b8;line-height:1.8">
+      ✅ Scanner top 50<br>
+      ✅ Vol mín $25K<br>
+      ✅ Largo Plazo 1D<br>
+      ✅ Análisis IA completo<br>
+      ✅ Hot Tokens (20)<br>
+      ✅ New Gems (30)<br>
+      ✅ Potencial IA<br>
+      ✅ Todo sin límites<br>
+    </div>
+  </div>
+</div>
+    """, unsafe_allow_html=True)
 
-    # Crypto directo
-    st.markdown("---")
-    st.markdown("#### 🪙 Donación directa en Crypto" if is_es else "#### 🪙 Direct Crypto Donation")
-    st.markdown("Sin intermediarios — cero comisiones de plataforma." if is_es else "No middlemen — zero platform fees.")
-
-    def crypto_card(icon, label, address, color):
-        st.markdown(f"""
-        <div class="card" style="border-color:{color}">
-          <div style="color:{color};font-size:13px;font-weight:700;margin-bottom:6px">{icon} {label}</div>
-          <div style="font-family:monospace;font-size:11px;color:#f1f5f9;
-                      word-break:break-all;background:#0f172a;
-                      padding:8px;border-radius:6px">{address}</div>
-        </div>""", unsafe_allow_html=True)
-        st.code(address, language=None)
-
-    crypto_card("₿", "Bitcoin (BTC)", DONATE_BTC, "#f59e0b")
-    crypto_card("Ξ", "Ethereum / USDT ERC-20", DONATE_ETH, "#10b981")
-    crypto_card("💵", "USDT TRC-20 (Tron — menores fees)" if is_es else "USDT TRC-20 (Tron — lowest fees)", DONATE_TRC20, "#3b82f6")
-
-    st.caption("⚠️ Verificá siempre la dirección antes de enviar. Las transacciones crypto son irreversibles." if is_es else "⚠️ Always verify the address before sending. Crypto transactions are irreversible.")
-
-    # Pionex
-    st.markdown("---")
-    st.markdown("#### 📈 " + ("Registrate en Pionex con mi link" if is_es else "Sign up on Pionex with my link"))
-    st.markdown("Sin costo para vos — recibo una pequeña comisión cuando operás." if is_es else "Free for you — I earn a small commission when you trade.")
-    st.markdown(
-        f'<a href="{PIONEX_REF}" target="_blank" '
-        f'style="display:block;text-align:center;background:#f59e0b;color:#000;'
-        f'border-radius:10px;padding:12px;font-size:14px;font-weight:700;'
-        f'text-decoration:none;">{L["pionex_ref"]}</a>',
-        unsafe_allow_html=True)
-
-with tab6:
-    st.markdown("### Ajustes")
-    st.code('# Render → Environment Variables:\nANTHROPIC_KEY = "sk-ant-..."')
-    st.info("En Render la key va en Environment, no en Secrets.")
-    st.divider()
-    st.markdown("""**Fuentes de datos v3.4**
-- 🟢 **KuCoin** — velas y precios (primario)
-- 🔵 **CoinPaprika** — fallback velas + supply/fundamentos
-- ⚪ **CoinGecko** — supply/ATH cuando está disponible
-- 📰 **8 feeds RSS** — noticias en paralelo
-- 🤖 **Claude API** — análisis IA (requiere key)
-    """)
-    st.caption("⚠️ Informacion de mercado. No es recomendacion de inversion.")
-
-with tab7:
-    st.markdown("### ❓ " + ("Preguntas Frecuentes" if st.session_state.lang=="es" else "FAQ"))
-    with st.expander("📊 ¿Qué es el Score y cómo se calcula?" if st.session_state.lang=="es" else "📊 What is the Score and how is it calculated?"):
-        st.markdown("""
-El **Score** es un número que indica qué tan adecuado es un token para cada tipo de bot.
-
-Se calcula combinando:
-- **Choppiness** — qué tan lateral se mueve el precio (ideal para Grid)
-- **Volatilidad horaria** — amplitud de los movimientos
-- **Liquidez** — volumen en dólares (más volumen = más seguro)
-- **Cambio 24h** — favorece subidas para Long, bajadas para Short
-- **Penalización** — si el token cae más del 15% se penaliza para Grid Long
-
-**Rango típico:** 10–120. Más alto = mejor candidato para ese bot.
-            """)
-
-    with st.expander("🔢 ¿Qué es el Choppiness Index?"):
-        st.markdown("""
-El **Choppiness Index** mide si el precio se mueve en tendencia o lateralmente.
-
-- **Alto (>5)** → mercado lateral = ideal para Grid Bot
-- **Bajo (<2)** → mercado en tendencia fuerte = mejor para DCA o Infinity
-
-El Grid Bot gana dinero cuando el precio sube y baja dentro de un rango. Un Choppiness alto indica que eso está pasando.
-            """)
-
-    with st.expander("🚦 ¿Qué significa el Semáforo Smart Entry?"):
-        st.markdown("""
-El **Smart Entry** evalúa 4 condiciones antes de entrar en una posición:
-
-| Fase | Condición | Qué significa |
-|------|-----------|---------------|
-| F1 | Precio > EMA50 | Tendencia alcista de corto plazo |
-| F2 | RSI(10) entre 45–65 | Momentum sin sobrecompra/sobreventa |
-| F3 | Volumen > media×1.5 | Hay dinero real entrando (whale inflow) |
-| F4 | Price Action alcista | La estructura de velas confirma |
-
-- 🟢 **4/4** → entrada válida con SL y TP calculados
-- 🟡 **3/4** → casi listo, monitorear
-- 🔴 **≤2/4** → esperar mejor momento
-            """)
-
-    with st.expander("📐 ¿Qué es el Price Action?"):
-        st.markdown("""
-**Price Action** analiza la **forma** del gráfico, no solo los números.
-
-- **Estructura HH/HL** (Higher Highs / Higher Lows) → tendencia alcista
-- **Estructura LH/LL** (Lower Highs / Lower Lows) → tendencia bajista
-- **Calidad del movimiento** → ¿las velas alcistas son más grandes que las bajistas?
-- **Soporte y Resistencia** → niveles donde el precio rebotó antes
-
-La calidad va de 0 a 1. Un valor ≥ 0.55 indica un movimiento sólido.
-            """)
-
-    with st.expander("🤖 ¿Qué es la Señal ML Lorentziana?"):
-        st.markdown("""
-Es una señal de **Machine Learning** basada en el algoritmo k-NN (k vecinos más cercanos) con distancia Lorentziana.
-
-Funciona así:
-1. Toma las últimas ~150 velas como historial
-2. Calcula RSI y EMA de cada vela
-3. Busca los 8 momentos históricos más similares al actual
-4. Si en esos momentos el precio subió → COMPRA, si bajó → VENTA
-
-⚠️ Es una **aproximación simplificada** — no es el indicador original de TradingView. Úsala como una señal adicional, no como la única.
-            """)
-
-    with st.expander("💥 ¿Qué es el detector Pump/Dump?"):
-        st.markdown("""
-Detecta movimientos inusuales de precio comparando:
-
-- **Movimiento 1h y 4h** — qué tan fuerte fue el cambio reciente
-- **Ratio de volumen** — si el volumen actual es 2× el promedio
-
-**Fases del PUMP:**
-- 🚀 EN CURSO → está subiendo ahora con volumen
-- 📊 CONSOLIDANDO → subió fuerte, ahora descansa
-- ⚠️ AGOTADO → ya subió mucho, volumen bajando
-
-**Fases del DUMP:**
-- 💥 EN CURSO → está cayendo con volumen
-- 🛑 FRENANDO → la caída se desacelera
-- 🟢 POSIBLE SUELO → caída grande, volumen bajo = posible rebote
-            """)
-
-    with st.expander("📊 ¿Qué bot usar según el mercado?"):
-        st.markdown("""
-| Situación | Bot recomendado |
-|-----------|----------------|
-| Precio lateral, sin tendencia clara | **Grid Long/Short** |
-| Tendencia alcista fuerte | **Infinity Long** |
-| Tendencia bajista fuerte | **Infinity Short** |
-| Precio cayó mucho (dip) | **DCA Long** |
-| Precio subió mucho (pump reciente) | **DCA Short** |
-
-**Regla general:** Grid Bot = lateral · Infinity = tendencia · DCA = correcciones
-            """)
-
-    with st.expander("⚠️ Aviso legal"):
-        st.markdown("""
-Quant Panel es una herramienta de **análisis técnico automatizado**.
-
-- No es asesoramiento financiero
-- Los resultados pasados no garantizan rendimientos futuros
-- El trading de criptomonedas conlleva riesgo de pérdida total del capital
-- Siempre usá gestión de riesgo y stop loss
-
-**Usá esta herramienta como apoyo a tu propio análisis, no como señal automática de entrada.**
-            """)
-
+    st.markdown("**" + ("¿Cómo obtener acceso Premium?" if is_es else "How to get Premium access?") + "**")
+    st.markdown("1. " + ("Hacé una d

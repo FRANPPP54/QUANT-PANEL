@@ -80,7 +80,7 @@ def render_login_sidebar():
                 st.rerun()
         else:
             st.markdown("### 🔐 Acceso Premium")
-            st.caption("Ingresá tu contraseña de acceso")
+            st.caption("Ingresa tu contrasena de acceso")
             pwd = st.text_input("Contraseña", type="password",
                                 key="login_input", label_visibility="collapsed")
             if st.button("Ingresar", use_container_width=True, type="primary"):
@@ -92,7 +92,7 @@ def render_login_sidebar():
                 else:
                     st.error("Contraseña incorrecta")
             st.divider()
-            st.markdown("**¿Sin contraseña?**")
+            st.markdown("**Sin contrasena?**")
             st.markdown(
                 f'<a href="{DONATE_COFFEE}" target="_blank" '
                 f'style="display:block;text-align:center;background:#FFDD00;color:#000;'
@@ -105,7 +105,7 @@ def render_login_sidebar():
                 f'border-radius:8px;padding:8px;font-size:12px;font-weight:700;'
                 f'text-decoration:none;margin-bottom:6px;">✈️ Contactar por Telegram</a>',
                 unsafe_allow_html=True)
-            st.caption("Donación mínima $5 · Recibís tu clave por Telegram")
+            st.caption("Donacion minima $5 - Recibes tu clave por Telegram")
 
 # ── Límites por plan ──────────────────────────────────────────────
 def get_plan_limits():
@@ -1415,7 +1415,7 @@ with tab2:
     st.markdown(f"### {L['analysis_title']}")
 
     if not is_premium():
-        st.caption("🔐 Largo Plazo · IA · Utilidad disponibles en Plan Premium — ingresá tu clave en ☰")
+        st.caption("🔐 Largo Plazo / IA / Utilidad - Plan Premium. Ingresa tu clave en el menu lateral")
         modo_options = [L["analysis_cp"]]
     else:
         modo_options = [L["analysis_cp"], L["analysis_lp"]]
@@ -1491,7 +1491,7 @@ with tab2:
                 if utility:
                     st.write("IA utilidad..."); utility_ai=get_utility_ai(sym_input, utility.get("desc",""), utility.get("cats",[]), news)
             elif ANTHROPIC_KEY and not is_premium():
-                st.caption("🔐 Análisis IA disponible en Plan Premium")
+                st.caption("🔐 Analisis IA disponible en Plan Premium")
             status.update(label=f"✅ {sym_input} analizado · {data_source}",state="complete")
 
         modo_txt="📅 Largo Plazo · 1D" if es_lp else "⚡ Corto Plazo · 1H"
@@ -1847,5 +1847,5 @@ with tab5:
 </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("**" + ("¿Cómo obtener acceso Premium?" if is_es else "How to get Premium access?") + "**")
-    st.markdown("1. " + ("Hacé una d
+    st.markdown("**" + ("Como obtener acceso Premium?" if is_es else "How to get Premium access?") + "**")
+    paso1 = "1. Hace una donacion mini

@@ -494,12 +494,143 @@ def get_top_gainers_kucoin(limit=10):
 
 @st.cache_data(ttl=900)
 def get_new_gems(limit=20):
-    """Tokens NUEVOS (<90 días) con supply <100M y fundamentos sólidos.
-    Estrategia:
-    1. CoinGecko /coins/list/new → tokens listados recientemente
-    2. Filtrar por supply <100M, MC >$500K, vol >$100K
-    3. Excluir meme coins y stablecoins
+    """Tokens nuevos con supply <100M y fundamentos sólidos.
+    Fuente principal: CoinPaprika (sin rate limit en Render).
+    Fallback: CoinGecko gecko_desc.
+    Criterios:
+    - Supply total < 100M tokens
+    - MC entre $500K y $500M
+    - Volumen > $100K
+    - FDV/MC bajo (poca dilución)
+    - No stablecoins, no meme coins
     """
+    MEME_EXCL = {"doge","shib","pepe","floki","bonk","wif","meme","babydoge",
+                 "safepal","grok","turbo","coq","pnut","neiro","popcat",
+                 "cat","dog","inu","elon","moon","safe","cum"}
+
+    def fmt_s(v):
+        if not v: return "N/A"
+        if v>=1e6: return f"{v/1e6:.1f}M"
+        if v>=1e3: return f"{v/1e3:.0f}K"
+        return str(int(v))
+
+    results = []
+
+    # ── CoinPaprika: tickers con supply y market data ────────────
+    r = api_get(f"{CP_BASE}/tickers",
+        params={"quotes":"USD","limit":500},
+        timeout=15, retries=2)
+
+    if r:
+        try:
+            coins = r.json()
+            for c in coins:
+                sym = (c.get("symbol") or "").lower()
+                if sym in STABLECOINS or any(m in sym for m in MEME_EXCL): continue
+
+                q   = c.get("quotes",{}).get("USD",{})
+                mc  = q.get("market_cap")  or 0
+                vol = q.get("volume_24h")  or 0
+                price = q.get("price")     or 0
+                c24 = q.get("percent_change_24h") or 0
+                c7d = q.get("percent_change_7d")  or 0
+                ath = q.get("ath_price")          or 0
+
+                # Supply desde el ticker de CP
+                total_supply = c.get("total_supply")       or 0
+                circ_supply  = c.get("circulating_supply") or 0
+                supply_check = total_supply or circ_supply
+
+                # Filtros
+                if supply_check > 100_000_000 and supply_check != 0: continue
+                if mc < 500_000 or mc > 500_000_000: continue
+                if vol < 100_000 or price <= 0: continue
+
+                # Fecha de listing desde CP
+                first_data = c.get("first_data_at","")
+                listed_date = "N/A"; days_old = None
+                if first_data:
+                    try:
+                        dt = datetime.fromisoformat(first_data.replace("Z","+00:00"))
+                        listed_date = dt.strftime("%d/%m/%Y")
+                        days_old = (datetime.now(timezone.utc) - dt).days
+                    except Exception: pass
+
+                # Score de calidad
+                circ_pct = round(circ_supply/total_supply*100,1) if total_supply>0 and circ_supply>0 else None
+                pct_ath  = round((price-ath)/ath*100,1) if ath and price else None
+                quality  = 10
+                if circ_pct and circ_pct < 20: quality -= 2
+                if days_old and days_old > 365:  quality -= 1  # no tan nuevo
+                if vol/mc < 0.01:                quality -= 1  # volumen bajo vs MC
+
+                results.append({
+                    "symbol":     c.get("symbol","").upper(),
+                    "name":       c.get("name",""),
+                    "price":      price,
+                    "change_24h": round(c24,1),
+                    "change_7d":  round(c7d,1),
+                    "mc":         mc,
+                    "vol":        vol,
+                    "supply_fmt": fmt_s(supply_check),
+                    "fdv_mc":     None,
+                    "circ_pct":   circ_pct,
+                    "rank":       c.get("rank"),
+                    "quality":    quality,
+                    "listed_date":listed_date,
+                    "days_old":   days_old,
+                    "pct_ath":    pct_ath,
+                })
+        except Exception: pass
+
+    # ── Fallback CoinGecko si CP falló ───────────────────────────
+    if not results:
+        r2 = api_get(f"{CG_BASE}/coins/markets",
+            params={"vs_currency":"usd","order":"gecko_desc",
+                    "per_page":100,"page":1,"sparkline":"false",
+                    "price_change_percentage":"24h,7d"},
+            timeout=8, retries=1)
+        if r2:
+            try:
+                for c in r2.json():
+                    sym=(c.get("symbol") or "").lower()
+                    if sym in STABLECOINS or any(m in sym for m in MEME_EXCL): continue
+                    total_supply = c.get("total_supply") or c.get("circulating_supply") or 0
+                    circ_supply  = c.get("circulating_supply") or 0
+                    mc  = c.get("market_cap") or 0
+                    fdv = c.get("fully_diluted_valuation") or 0
+                    vol = c.get("total_volume") or 0
+                    price = c.get("current_price") or 0
+                    if total_supply > 100_000_000 and total_supply!=0: continue
+                    if mc < 500_000 or mc > 500_000_000: continue
+                    if vol < 100_000 or price <= 0: continue
+                    fdv_mc = round(fdv/mc,1) if fdv and mc>0 else None
+                    circ_pct = round(circ_supply/total_supply*100,1) if total_supply>0 and circ_supply>0 else None
+                    quality = 10
+                    if fdv_mc and fdv_mc>5: quality-=3
+                    if circ_pct and circ_pct<20: quality-=2
+                    c24=round(c.get("price_change_percentage_24h") or 0,1)
+                    c7d=round(c.get("price_change_percentage_7d_in_currency") or 0,1)
+                    results.append({
+                        "symbol":c.get("symbol","").upper(),"name":c.get("name",""),
+                        "price":price,"change_24h":c24,"change_7d":c7d,
+                        "mc":mc,"vol":vol,"supply_fmt":fmt_s(total_supply),
+                        "fdv_mc":fdv_mc,"circ_pct":circ_pct,"rank":c.get("market_cap_rank"),
+                        "quality":quality,"listed_date":"N/A","days_old":None,"pct_ath":None,
+                    })
+            except Exception: pass
+
+    # Ordenar: primero los más nuevos con mayor calidad
+    results.sort(key=lambda x: (
+        x["quality"],
+        -x.get("days_old",9999) if x.get("days_old") else 0,
+        x["vol"]
+    ), reverse=True)
+
+    seen=set(); unique=[]
+    for r in results:
+        if r["symbol"] not in seen: seen.add(r["symbol"]); unique.append(r)
+    return unique[:limit]
     MEME_EXCL = {"doge","shib","pepe","floki","bonk","wif","meme","babydoge",
                  "safepal","grok","turbo","dogwifhat","coq","pnut","neiro","popcat",
                  "cat","dog","inu","elon","moon","safe","cum","xxx"}
